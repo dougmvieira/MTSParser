@@ -1,4 +1,4 @@
-module MTS.LOB (prepareLOB) where
+module MTS.LOB (combineMTSTime, shoot, rebuildLOB) where
 
 import MTS.Types
 import MTS.Decode
@@ -11,16 +11,16 @@ import qualified Data.Map as M
 
 type Price = Double
 type Quantity = Double
-type HiddenQty = Double
-type Ask = (Price, Quantity)
 type Bid = (Price, Quantity)
-type ProposalID = Int
+type Ask = (Price, Quantity)
 
-data MTSLimitOrder = MTSLimitOrder ProposalID MTSStatus (Maybe Ask) (Maybe Bid) deriving Show
-data MTSMarketOrder = MTSMarketOrder (Maybe Ask) (Maybe Bid) deriving Show
-type MTSLOB = M.Map TimeOfDay MTSLimitOrder
-type Expiry = ProposalID
-type Expiries = M.Map TimeOfDay Expiry
+type ProposalID = Int
+type ProposalBook = M.Map ProposalID Proposal
+
+type LOBSide = M.Map Price Quantity
+type AskSide = LOBSide
+type BidSide = LOBSide
+type Snapshot = (BidSide, AskSide)
 
 addPico :: TimeOfDay -> Pico -> TimeOfDay
 addPico (TimeOfDay h m p) p' = TimeOfDay h m (p + p')
@@ -28,29 +28,36 @@ addPico (TimeOfDay h m p) p' = TimeOfDay h m (p + p')
 combineMTSTime :: MTSTime -> MTSPico -> TimeOfDay
 combineMTSTime t p = addPico (getMTSTime t) (getMTSPico p)
 
-pAskQty' :: Proposal -> Quantity
-pAskQty' = getMTSQty . pAskQty
-
-pBidQty' :: Proposal -> Quantity
-pBidQty' = getMTSQty . pBidQty
-
-pAskBid :: Proposal -> (Maybe Ask, Maybe Bid)
-pAskBid p
-  | pQuotingSide p == BothSides = (Just (pAskPrice p, pAskQty' p), Just (pBidPrice p, pBidQty' p))
-  | pQuotingSide p == AskOnly = (Just (pAskPrice p, pAskQty' p), Nothing)
-  | pQuotingSide p == BidOnly = (Nothing, Just (pBidPrice p, pBidQty' p))
-
-proposalToLimitOrder :: Proposal -> ((TimeOfDay, MTSLimitOrder), (TimeOfDay, Expiry))
-proposalToLimitOrder p = ( ( combineMTSTime (pUpdTime p) (pUpdTimeMsec p)
-                           , MTSLimitOrder (pProposalID p) (pStatus p) ask bid )
-			 , ( combineMTSTime (pEndTime p) (pEndTimeMsec p)
-			   , pProposalID p ) ) where (ask, bid) = pAskBid p
-
 mtsCode :: Text
 mtsCode = pack "MTS"
 
-prepareLOB :: V.Vector Proposal -> (MTSLOB, Expiries)
-prepareLOB ps = ( M.fromList . fst $ ordersList
-                , M.fromList . snd $ ordersList ) where
-	          ordersList :: ([(TimeOfDay, MTSLimitOrder)], [(TimeOfDay, Expiry)])
-	          ordersList = unzip . map proposalToLimitOrder . filter ((==mtsCode) . pMarketCode) . V.toList $ ps
+pBid :: Proposal -> Bid
+pBid p = (pBidPrice p, getMTSQty . pBidQty $ p)
+pAsk :: Proposal -> Ask
+pAsk p = (pAskPrice p, getMTSQty . pAskQty $ p)
+
+isActive :: Proposal -> Bool
+isActive p = pCheck_Logon p == 0 && pStatus p == Active
+
+buildEventMap :: V.Vector Proposal -> M.Map TimeOfDay Proposal
+buildEventMap = M.fromListWith (error "Duplicate time stamps.") . map addKey . onlyMTS . V.toList where
+  addKey :: Proposal -> (TimeOfDay, Proposal)
+  addKey p = (combineMTSTime (pUpdTime p) (pUpdTimeMsec p), p)
+  onlyMTS :: [Proposal] -> [Proposal]
+  onlyMTS = filter ((==mtsCode) . pMarketCode)
+
+insertEvent :: Proposal -> ProposalBook -> ProposalBook
+insertEvent p = M.insert (pProposalID p) p
+
+-- |Shoot a snapshot of the visible LOB
+shoot :: ProposalBook -> Snapshot
+shoot ps = (compile . map pBid . filter isActive . M.elems $ ps, compile . map pAsk . filter isActive . M.elems $ ps) where
+  compile :: [(Price, Quantity)] -> LOBSide
+  compile = M.fromListWith (+)
+
+-- |Shoot a snapshot of the LOB with hidden orders
+shootXRay :: ProposalBook -> Snapshot 
+shootXRay = undefined
+
+rebuildLOB :: V.Vector Proposal -> M.Map TimeOfDay Snapshot
+rebuildLOB = fmap shoot . snd . M.mapAccum (\acc x -> (insertEvent x acc, insertEvent x acc)) M.empty . buildEventMap
