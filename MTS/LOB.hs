@@ -39,8 +39,13 @@ pAsk p = (pAskPrice p, getMTSQty . pAskQty $ p)
 isActive :: Proposal -> Bool
 isActive p = pCheck_Logon p == 0 && pStatus p == Active
 
+lastIfSameID :: Proposal -> Proposal -> Proposal
+lastIfSameID p2 p1 = if pProposalID p1 == pProposalID p2
+                     then p2
+                     else error "Duplicate time stamps for different proposal IDs"
+
 buildEventMap :: V.Vector Proposal -> M.Map TimeOfDay Proposal
-buildEventMap = M.fromListWith (error "Duplicate time stamps.") . map addKey . onlyMTS . V.toList where
+buildEventMap = M.fromListWith lastIfSameID . map addKey . onlyMTS . V.toList where
   addKey :: Proposal -> (TimeOfDay, Proposal)
   addKey p = (combineMTSTime (pUpdTime p) (pUpdTimeMsec p), p)
   onlyMTS :: [Proposal] -> [Proposal]
