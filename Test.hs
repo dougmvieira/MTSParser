@@ -2,6 +2,7 @@ import MTS.Query
 import MTS.Decode
 import MTS.Types
 import MTS.LOB
+import MTS.Encode
 import qualified Data.Vector as V
 import qualified Data.ByteString.Lazy as B
 import qualified Data.Map as M

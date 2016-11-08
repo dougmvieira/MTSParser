@@ -1,4 +1,4 @@
-module MTS.LOB (combineMTSTime, shoot, rebuildLOB) where
+module MTS.LOB (combineMTSTime, shoot, rebuildLOB, Price, Quantity, Bid, Ask, LOBSide, AskSide, BidSide, Snapshot) where
 
 import MTS.Types
 import MTS.Decode
