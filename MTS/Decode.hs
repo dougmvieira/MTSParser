@@ -45,6 +45,7 @@ instance FromField MTSStatus where
     parseStatus :: String -> Parser MTSStatus
     parseStatus "0" = return Active
     parseStatus "1" = return Suspended
+    parseStatus "8" = return Unknown
     parseStatus _ = fail "Failed to parse MTSStatus."
 
 instance FromField MTSSide where

@@ -20,7 +20,7 @@ import Data.Map (Map())
 newtype MTSDay = MTSDay { getMTSDay :: Day } deriving Show
 newtype MTSTime = MTSTime { getMTSTime :: TimeOfDay } deriving Show
 newtype MTSPico = MTSPico { getMTSPico :: Pico } deriving Show
-data MTSStatus = Active | Suspended deriving (Eq, Show)
+data MTSStatus = Active | Suspended | Unknown deriving (Eq, Show)
 data MTSSide = BothSides | AskOnly | BidOnly deriving (Eq, Show)
 newtype MTSQty = MTSQty { getMTSQty :: Double } deriving Show
 newtype MTSYield = MTSYield { getMTSYield :: Double } deriving Show
