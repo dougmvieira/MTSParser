@@ -39,20 +39,12 @@ pAsk p = (pAskPrice p, getMTSQty . pAskQty $ p)
 isActive :: Proposal -> Bool
 isActive p = pCheck_Logon p == 0 && pStatus p == Active
 
-lastIfSameID :: Proposal -> Proposal -> Proposal
-lastIfSameID p2 p1 = if pProposalID p1 == pProposalID p2
-                     then p2
-                     else error "Duplicate time stamps for different proposal IDs"
-
-buildEventMap :: V.Vector Proposal -> M.Map TimeOfDay Proposal
-buildEventMap = M.fromListWith lastIfSameID . map addKey . onlyMTS . V.toList where
-  addKey :: Proposal -> (TimeOfDay, Proposal)
-  addKey p = (combineMTSTime (pUpdTime p) (pUpdTimeMsec p), p)
+buildEventMap :: V.Vector Proposal -> M.Map TimeOfDay [Proposal]
+buildEventMap = M.fromListWith (++) . map makeKeyVal . onlyMTS . V.toList where
+  makeKeyVal :: Proposal -> (TimeOfDay, [Proposal])
+  makeKeyVal p = (combineMTSTime (pUpdTime p) (pUpdTimeMsec p), [p])
   onlyMTS :: [Proposal] -> [Proposal]
   onlyMTS = filter ((==mtsCode) . pMarketCode)
-
-insertEvent :: Proposal -> ProposalBook -> ProposalBook
-insertEvent p = M.insert (pProposalID p) p
 
 -- |Shoot a snapshot of the visible LOB
 shoot :: ProposalBook -> Snapshot
@@ -64,5 +56,21 @@ shoot ps = (compile . map pBid . filter isActive . M.elems $ ps, compile . map p
 shootXRay :: ProposalBook -> Snapshot 
 shootXRay = undefined
 
+hasDuplicate :: Eq a => [a] -> Bool
+hasDuplicate [] = False
+hasDuplicate (x:xs) = x `elem` xs && hasDuplicate xs
+
+hasDuplicatePrices :: ProposalBook -> Bool
+hasDuplicatePrices pb = let ((bs, as), _) = M.mapAccum (\(bs', as') p -> ((pBidPrice p:bs', pAskPrice p:as'), ())) ([],[]) pb
+                        in hasDuplicate bs || hasDuplicate as
+
+makeProposalBook :: [Proposal] -> ProposalBook
+makeProposalBook = sanityCheck . M.fromList . map (\p -> (pProposalID p, p)) where
+   sanityCheck :: ProposalBook -> ProposalBook
+   sanityCheck pb = if hasDuplicatePrices pb
+		    then error $ "Invalid duplicate time proposals: " ++ show pb
+		    else pb
+
 rebuildLOB :: V.Vector Proposal -> M.Map TimeOfDay Snapshot
-rebuildLOB = fmap shoot . snd . M.mapAccum (\acc x -> (insertEvent x acc, insertEvent x acc)) M.empty . buildEventMap
+rebuildLOB = fmap shoot . snd . M.mapAccum (\acc x -> (updatePBook acc x, updatePBook acc x)) M.empty . buildEventMap where
+   updatePBook acc = M.union acc . makeProposalBook
