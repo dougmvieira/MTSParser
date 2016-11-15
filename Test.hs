@@ -10,20 +10,23 @@ import qualified Data.Map as M
 proposalExamples :: IO B.ByteString
 proposalExamples = B.readFile "IT0004923998.txt"
 
+proposalExamples' :: IO B.ByteString
+proposalExamples' = B.readFile "IT0004019581.txt"
+
 fillExamples :: IO B.ByteString
 fillExamples = B.readFile "fills_nov15.txt"
 
 orderExamples :: IO B.ByteString
 orderExamples = B.readFile "orders_nov15.txt"
  
-parseFillToList :: B.ByteString -> Either String [Fill]
-parseFillToList = fmap V.toList . MTS.Decode.parseFill
+parseFillToList :: B.ByteString -> [Fill]
+parseFillToList fstext = let (Right fs) = parseFill fstext in V.toList fs
 
-parseOrderToList :: B.ByteString -> Either String [Order]
-parseOrderToList = fmap V.toList . MTS.Decode.parseOrder
+parseOrderToList :: B.ByteString -> [Order]
+parseOrderToList ostext = let (Right os) = parseOrder ostext in V.toList os
 
-parseProposalToList :: B.ByteString -> Either String [Proposal]
-parseProposalToList = fmap V.toList . MTS.Decode.parseProposal
+parseProposalToList :: B.ByteString -> [Proposal]
+parseProposalToList pstext = let (Right ps) = parseProposal pstext in V.toList ps
 
 printOrThrow :: Either String String -> IO ()
 printOrThrow (Left s) = error s
@@ -50,6 +53,11 @@ testProposal = do
 testFill = do
   contents <- fillExamples
   printOrThrow . fmap (show . V.head) . parseFill $ contents
+
+testRebuildLOB = do
+  contents <- proposalExamples
+  (Right ps) <- return . parseProposal $ contents
+  B.writeFile "data.txt" . encodeDepth3LOB . rebuildLOB $ ps
 
 main = do
   testOrder
