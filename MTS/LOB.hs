@@ -1,10 +1,11 @@
-module MTS.LOB (combineMTSTime, shoot, rebuildProposalBook, rebuildLOB, rebuildLOBXRay, Price, Quantity, Bid, Ask, LOBSide, AskSide, BidSide, Snapshot) where
+module MTS.LOB (combineMTSTime, shoot, rebuildEventBook, rebuildLOB, rebuildLOBXRay, Price, Quantity, Bid, Ask, LOBSide, AskSide, BidSide, Snapshot) where
 
 import MTS.Types
 import MTS.Decode
 import Data.Fixed (Pico)
 import Data.Text (Text, pack)
-import Data.Time (TimeOfDay(..))
+import Data.Time (Day,
+                  TimeOfDay(..))
 import qualified Data.Vector as V
 import qualified Data.Map as M
 
@@ -22,7 +23,9 @@ type AskSide = LOBSide
 type BidSide = LOBSide
 type Snapshot = (BidSide, AskSide)
 
-data Event = ProposalEvent Proposal | OrderEvent Order
+type Event = ([Proposal], Maybe Order)
+type EventBook = (ProposalBook, Maybe Order)
+
 
 addPico :: TimeOfDay -> Pico -> TimeOfDay
 addPico (TimeOfDay h m p) p' = TimeOfDay h m (p + p')
@@ -45,20 +48,31 @@ pAskXRay p = (pAskPrice p, getMTSQty . pAskQty $ p)
 isActive :: Proposal -> Bool
 isActive p = pCheck_Logon p == 0 && pStatus p == Active
 
-{-
-buildEventMap :: V.Vector Proposal -> M.Map TimeOfDay [Event]
-buildEventMap = M.fromListWith (++) . map makeKeyVal . onlyMTS . V.toList where
+buildProposalMap :: V.Vector Proposal -> M.Map TimeOfDay [Proposal]
+buildProposalMap = M.fromListWith (++) . map makeKeyVal . onlyMTS . V.toList where
   makeKeyVal :: Proposal -> (TimeOfDay, [Proposal])
   makeKeyVal p = (combineMTSTime (pUpdTime p) (pUpdTimeMsec p), [p])
   onlyMTS :: [Proposal] -> [Proposal]
   onlyMTS = filter ((==mtsCode) . pMarketCode)
--}
-buildEventMap :: V.Vector Proposal -> M.Map TimeOfDay [Proposal]
-buildEventMap = M.fromListWith (++) . map makeKeyVal . onlyMTS . V.toList where
-  makeKeyVal :: Proposal -> (TimeOfDay, [Proposal])
-  makeKeyVal p = (combineMTSTime (pUpdTime p) (pUpdTimeMsec p), [p])
-  onlyMTS :: [Proposal] -> [Proposal]
-  onlyMTS = filter ((==mtsCode) . pMarketCode)
+
+buildOrderMap :: Day -> V.Vector Order -> M.Map TimeOfDay Order
+buildOrderMap d = M.fromListWith err . map makeKeyVal . onlyMTS . filterDay . V.toList where
+  err = error "Found two orders with same time stamp."
+  makeKeyVal :: Order -> (TimeOfDay, Order)
+  makeKeyVal o = (combineMTSTime (oRefTime o) (oRefTimeMsec o), o)
+  onlyMTS :: [Order] -> [Order]
+  onlyMTS = filter $ (==mtsCode) . oMarketCode
+  filterDay :: [Order] -> [Order]
+  filterDay = filter $ (==d) . getMTSDay . oRefDate
+
+buildEventMap :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay Event
+buildEventMap ps os = M.unionWith (\(p, _) (_, o) -> (p, o)) pm om where
+  pm :: M.Map TimeOfDay Event
+  pm = fmap (\p -> (p, Nothing)) $ buildProposalMap ps
+  om :: M.Map TimeOfDay Event
+  om = fmap (\o -> ([], Just o)) $ buildOrderMap d os
+  d :: Day
+  d = getMTSDay . pRefDate . head . V.toList $ ps
 
 filterActiveProposals :: ProposalBook -> [Proposal]
 filterActiveProposals = filter isActive . M.elems
@@ -67,14 +81,14 @@ aggregQties :: [(Price, Quantity)] -> LOBSide
 aggregQties = M.fromListWith (+)
 
 -- |Shoot a snapshot of the visible LOB
-shoot :: ProposalBook -> Snapshot
-shoot ps = (aggregQties . map pBid . filterActiveProposals $ ps,
-            aggregQties . map pAsk . filterActiveProposals $ ps)
+shoot :: EventBook -> Snapshot
+shoot eb = (aggregQties . map pBid . filterActiveProposals . fst $ eb,
+            aggregQties . map pAsk . filterActiveProposals . fst $ eb)
 
 -- |Shoot a snapshot of the LOB with hidden orders
-shootXRay :: ProposalBook -> Snapshot 
-shootXRay ps = (aggregQties . map pBidXRay . filterActiveProposals $ ps,
-                aggregQties . map pAskXRay . filterActiveProposals $ ps)
+shootXRay :: EventBook -> Snapshot
+shootXRay eb = (aggregQties . map pBidXRay . filterActiveProposals . fst $ eb,
+                aggregQties . map pAskXRay . filterActiveProposals . fst $ eb)
 
 hasDuplicate :: Eq a => [a] -> Bool
 hasDuplicate [] = False
@@ -91,12 +105,21 @@ makeProposalBook = sanityCheck . M.fromList . map (\p -> (pProposalID p, p)) whe
 		    then error $ "Invalid duplicate time proposals: " ++ show pb
 		    else pb
 
-rebuildProposalBook :: V.Vector Proposal -> M.Map TimeOfDay ProposalBook
-rebuildProposalBook = snd . M.mapAccum (\acc x -> (updatePBook acc x, updatePBook acc x)) M.empty . buildEventMap where
-   updatePBook acc x = M.union (makeProposalBook x) acc
+matchingEngine :: [Proposal] -> Order -> ProposalBook -> ProposalBook
+matchingEngine ps o = id
 
-rebuildLOB :: V.Vector Proposal -> M.Map TimeOfDay Snapshot
-rebuildLOB = fmap shoot . rebuildProposalBook
+rebuildEventBook :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay EventBook
+rebuildEventBook ps os = M.fromDescList . init . M.foldlWithKey accFun acc0 $ buildEventMap ps os where
+   updateEBook :: Event -> EventBook -> EventBook
+   updateEBook (ps, Nothing) (pb, o) = (M.union (makeProposalBook ps) pb, o)
+   updateEBook (ps, Just o) (pb, _) = (matchingEngine ps o pb, Just o)
+   accFun :: [(TimeOfDay, EventBook)] -> TimeOfDay -> Event -> [(TimeOfDay, EventBook)]
+   accFun acc@((_, eb):xs) k e = (k, updateEBook e eb):acc
+   acc0 :: [(TimeOfDay, EventBook)]
+   acc0 = [(TimeOfDay 0 0 0, (M.empty, Nothing))]
 
-rebuildLOBXRay :: V.Vector Proposal -> M.Map TimeOfDay Snapshot
-rebuildLOBXRay = fmap shootXRay . rebuildProposalBook
+rebuildLOB :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay Snapshot
+rebuildLOB ps os = fmap shoot $ rebuildEventBook ps os
+
+rebuildLOBXRay :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay Snapshot
+rebuildLOBXRay ps os = fmap shootXRay $ rebuildEventBook ps os

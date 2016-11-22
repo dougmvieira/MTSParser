@@ -55,9 +55,11 @@ testFill = do
   printOrThrow . fmap (show . V.head) . parseFill $ contents
 
 testRebuildLOB = do
-  contents <- proposalExamples
-  (Right ps) <- return . parseProposal $ contents
-  B.writeFile "data.txt" . encodeDepth3LOB . rebuildLOB $ ps
+  psText <- proposalExamples
+  osText <- orderExamples
+  (Right ps) <- return . parseProposal $ psText
+  (Right os) <- return . parseOrder $ osText
+  B.writeFile "data.txt" . encodeDepth3LOB $ rebuildLOB ps os
 
 main = do
   testOrder
