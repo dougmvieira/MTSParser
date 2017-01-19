@@ -61,6 +61,13 @@ testRebuildLOB = do
   (Right os) <- return . parseOrder $ osText
   B.writeFile "data.txt" . encodeDepth3LOB $ rebuildLOB ps os
 
+testRebuildLOBWithTrades = do
+  psText <- proposalExamples'
+  osText <- orderExamples
+  (Right ps) <- return . parseProposal $ psText
+  (Right os) <- return . parseOrder $ osText
+  B.writeFile "dataWithTrades.txt" . encodeDepth3LOB $ rebuildLOB ps os
+
 main = do
   testOrder
   testProposal

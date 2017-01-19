@@ -7,6 +7,8 @@ module MTS.Types (MTSDay(..),
 		  MTSSide(..),
                   MTSQty(..),
 		  MTSYield(..),
+		  Verb(..),
+		  OrderType(..),
 		  Proposal(..),
 		  Fill(..),
 		  Order(..)) where
@@ -24,6 +26,8 @@ data MTSStatus = Active | Suspended | Unknown deriving (Eq, Show)
 data MTSSide = BothSides | AskOnly | BidOnly deriving (Eq, Show)
 newtype MTSQty = MTSQty { getMTSQty :: Double } deriving Show
 newtype MTSYield = MTSYield { getMTSYield :: Double } deriving Show
+data Verb = Buy | Sell deriving (Eq, Show)
+data OrderType = AllOrNone | FillAndKill deriving (Eq, Show)
 
 data Proposal = Proposal { pMarketCode  :: Text
                          , pRefDate     :: MTSDay
@@ -75,8 +79,8 @@ data Order = Order { oMarketCode  :: Text
                    , oBondType    :: Text
 		   , oOrderSeqNo  :: Int
                    , oOrderStatus :: Text
-		   , oVerb        :: Int
+		   , oVerb        :: Verb
                    , oPrice       :: Double
                    , oQuantity    :: MTSQty
 		   , oFillNo      :: Double
-		   , oOrderType   :: Text } deriving (Show, Generic)
+		   , oOrderType   :: OrderType } deriving (Show, Generic)

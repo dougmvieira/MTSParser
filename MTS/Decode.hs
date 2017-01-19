@@ -65,6 +65,20 @@ instance FromField MTSYield where
     fixInitDot ('.':s) = "0." ++ s
     fixInitDot s = s
 
+instance FromField Verb where
+  parseField = parseSide . C.unpack where
+    parseSide :: String -> Parser Verb
+    parseSide "0" = return Buy
+    parseSide "1" = return Sell
+    parseSide _ = fail "Failed to parse Verb."
+
+instance FromField OrderType where
+  parseField = parseSide . C.unpack where
+    parseSide :: String -> Parser OrderType
+    parseSide "FillAndKill" = return FillAndKill
+    parseSide "AllOrNone" = return AllOrNone
+    parseSide _ = fail "Failed to parse Verb."
+
 
 instance MTSTickData Proposal
 instance FromRecord Proposal
