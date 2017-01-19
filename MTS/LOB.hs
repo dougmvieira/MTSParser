@@ -116,8 +116,8 @@ makeProposalBook :: [Proposal] -> ProposalBook
 makeProposalBook = sanityCheck . M.fromList . map (\p -> (pProposalID p, p)) where
    sanityCheck :: ProposalBook -> ProposalBook
    sanityCheck pb = if hasDuplicatePrices pb
-		    then error $ "Invalid duplicate time proposals: " ++ show pb
-		    else pb
+            then error $ "Invalid duplicate time proposals: " ++ show pb
+            else pb
 
 type PriceTimeOrdList = [((Price, TimeOfDay), Quantity)]
 
@@ -168,9 +168,9 @@ checkAggression v ptol ps = (length ptol == length ps
 matchingEngine :: [Proposal] -> Order -> ProposalBook -> ProposalBook
 matchingEngine ps o pb = if   checkAggression (oVerb o) aggression ps
                          then M.union (makeProposalBook ps) pb
-			 else error $ "New state of LOB is not consistent with market order" ++ show o ++ show aggression where
-			 aggression :: PriceTimeOrdList
-			 aggression = (resolveTrade (oOrderType o) o pb)
+             else error $ "New state of LOB is not consistent with market order" ++ show o ++ show aggression where
+             aggression :: PriceTimeOrdList
+             aggression = (resolveTrade (oOrderType o) o pb)
 
 rebuildEventBook :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay EventBook
 rebuildEventBook ps os = M.fromDescList . init . M.foldlWithKey accFun acc0 $ buildEventMap ps os where

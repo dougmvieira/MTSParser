@@ -1,7 +1,7 @@
 module MTS.Query ( findProposalByID
                  , findProposalsInASecond
-		 , findFillsByBondAndDay
-		 , findOrdersByBondAndDay) where
+         , findFillsByBondAndDay
+         , findOrdersByBondAndDay) where
 
 import MTS.Types
 

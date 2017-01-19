@@ -2,16 +2,16 @@
 
 module MTS.Types (MTSDay(..),
                   MTSTime(..),
-		  MTSPico(..),
-		  MTSStatus(..),
-		  MTSSide(..),
+          MTSPico(..),
+          MTSStatus(..),
+          MTSSide(..),
                   MTSQty(..),
-		  MTSYield(..),
-		  Verb(..),
-		  OrderType(..),
-		  Proposal(..),
-		  Fill(..),
-		  Order(..)) where
+          MTSYield(..),
+          Verb(..),
+          OrderType(..),
+          Proposal(..),
+          Fill(..),
+          Order(..)) where
 
 import Data.Text (Text)
 import Data.Fixed (Pico)
@@ -49,27 +49,27 @@ data Proposal = Proposal { pMarketCode  :: Text
                          , pAskDomQty   :: MTSQty
                          , pBidYield    :: MTSYield
                          , pAskYield    :: MTSYield
-			 , pProposalID  :: Int
-			 , pQuotingSide :: MTSSide } deriving (Show, Generic)
+             , pProposalID  :: Int
+             , pQuotingSide :: MTSSide } deriving (Show, Generic)
 
 data Fill = Fill { fRefDate         :: MTSDay
                  , fMarketCode      :: Text
                  , fBondCode        :: Text
                  , fTime            :: MTSTime
                  , fTimeMsec        :: MTSPico 
-		 , fVerb            :: Int
+         , fVerb            :: Int
                  , fPrice           :: Double
                  , fQuantity        :: MTSQty
                  , fYield           :: MTSYield
-		 , fOrderSeqNo      :: Int
+         , fOrderSeqNo      :: Int
                  , fOrderStatus     :: Text
-		 , fAggProfile      :: Text
-		 , fMultMarketFlag  :: Int
-		 , fContractNo      :: Int
-		 , fCCPFlag         :: Text
+         , fAggProfile      :: Text
+         , fMultMarketFlag  :: Int
+         , fContractNo      :: Int
+         , fCCPFlag         :: Text
                  , fBondType        :: Text
-		 , fSettlDate       :: Text
-		 , fTransactionType :: Text } deriving (Show, Generic)
+         , fSettlDate       :: Text
+         , fTransactionType :: Text } deriving (Show, Generic)
 
 data Order = Order { oMarketCode  :: Text
                    , oRefDate     :: MTSDay
@@ -77,10 +77,10 @@ data Order = Order { oMarketCode  :: Text
                    , oRefTimeMsec :: MTSPico 
                    , oBondCode    :: Text
                    , oBondType    :: Text
-		   , oOrderSeqNo  :: Int
+           , oOrderSeqNo  :: Int
                    , oOrderStatus :: Text
-		   , oVerb        :: Verb
+           , oVerb        :: Verb
                    , oPrice       :: Double
                    , oQuantity    :: MTSQty
-		   , oFillNo      :: Double
-		   , oOrderType   :: OrderType } deriving (Show, Generic)
+           , oFillNo      :: Double
+           , oOrderType   :: OrderType } deriving (Show, Generic)

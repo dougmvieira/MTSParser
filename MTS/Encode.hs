@@ -8,22 +8,22 @@ import Data.Time (TimeOfDay)
 import Data.Csv (ToField,
                  toField,
                  ToRecord,
-		 encodeByName,
-		 encode,
-		 Header,
-		 Parser,
-		 (.=),
-		 ToNamedRecord,
-		 toNamedRecord,
-		 namedRecord)
+         encodeByName,
+         encode,
+         Header,
+         Parser,
+         (.=),
+         ToNamedRecord,
+         toNamedRecord,
+         namedRecord)
 import MTS.LOB (Price,
                 Quantity,
-		Bid,
-		Ask,
-		LOBSide,
-		BidSide,
-		AskSide,
-		Snapshot)
+        Bid,
+        Ask,
+        LOBSide,
+        BidSide,
+        AskSide,
+        Snapshot)
 import qualified Data.Map as M
 import qualified Data.Vector as V
 import qualified Data.ByteString.Lazy as B
