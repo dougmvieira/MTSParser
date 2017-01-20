@@ -1,27 +1,27 @@
 {-# LANGUAGE DeriveGeneric #-}
 
 module MTS.Decode (parseProposal,
-           parseFill,
-           parseOrder) where
+                   parseFill,
+                   parseOrder) where
 
 import MTS.Types
 import Data.Char (ord)
 import Data.Csv (FromField,
                  FromRecord,
-         parseField,
-         decode,
-         decodeWith,
+                 parseField,
+                 decode,
+                 decodeWith,
                  defaultDecodeOptions,
-         decDelimiter,
-         HasHeader(NoHeader),
-         Parser)
+                 decDelimiter,
+                 HasHeader(NoHeader),
+                 Parser)
 import Data.Fixed (Pico)
 import Data.Text (Text,
                   pack)
 import Data.Time (defaultTimeLocale,
                   parseTimeM,
-          Day,
-          TimeOfDay(..))
+                  Day,
+                  TimeOfDay(..))
 import Data.Vector (Vector())
 
 import qualified Data.ByteString.Char8 as C
@@ -58,6 +58,9 @@ instance FromField MTSSide where
 
 instance FromField MTSQty where
   parseField = fmap MTSQty . parseField . C.filter (/= ',')
+
+instance FromField MTSLots where
+  parseField = fmap (MTSLots . (*1000000) . getMTSQty) . parseField
 
 instance FromField MTSYield where
   parseField = fmap MTSYield . parseField . C.pack . fixInitDot . C.unpack where

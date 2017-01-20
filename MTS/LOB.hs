@@ -38,20 +38,17 @@ combineMTSTime t p = addPico (getMTSTime t) (getMTSPico p)
 getProposalTimeOfDay :: Proposal -> TimeOfDay
 getProposalTimeOfDay p = combineMTSTime (pUpdTime p) (pUpdTimeMsec p)
 
-oQty :: Order -> Quantity
-oQty = (/1000000) . getMTSQty . oQuantity
-
 mtsCode :: Text
 mtsCode = pack "MTS"
 
 pBid :: Proposal -> Bid
-pBid p = (pBidPrice p, getMTSQty . pBidEbmQty $ p)
+pBid p = (pBidPrice p, qtyFromLots . pBidEbmQty $ p)
 pAsk :: Proposal -> Ask
-pAsk p = (pAskPrice p, getMTSQty . pAskEbmQty $ p)
+pAsk p = (pAskPrice p, qtyFromLots . pAskEbmQty $ p)
 pBidXRay :: Proposal -> Bid
-pBidXRay p = (pBidPrice p, getMTSQty . pBidQty $ p)
+pBidXRay p = (pBidPrice p, qtyFromLots . pBidQty $ p)
 pAskXRay :: Proposal -> Ask
-pAskXRay p = (pAskPrice p, getMTSQty . pAskQty $ p)
+pAskXRay p = (pAskPrice p, qtyFromLots . pAskQty $ p)
 
 isActive :: Proposal -> Bool
 isActive p = pCheck_Logon p == 0 && pStatus p == Active
@@ -126,7 +123,7 @@ toPriceTimeOrdList v = M.toAscList . M.fromList . map (\p -> ((pPrice p, getProp
    pPrice :: Proposal -> Price
    pPrice = if v == Buy then pAskPrice else negate . pBidPrice
    pQty :: Proposal -> Quantity
-   pQty = if v == Buy then getMTSQty . pAskQty else getMTSQty . pBidQty
+   pQty = if v == Buy then qtyFromLots . pAskQty else qtyFromLots . pBidQty
 
 aggressProposals :: Price -> (Quantity, PriceTimeOrdList, PriceTimeOrdList) -> (Quantity, PriceTimeOrdList, PriceTimeOrdList)
 aggressProposals _  (q, acc, []) = (q, acc, [])
@@ -139,7 +136,7 @@ fillAndKill :: Price -> Quantity -> PriceTimeOrdList -> PriceTimeOrdList
 fillAndKill pc q pps = let (_, pps', _) = aggressProposals pc (q, [], pps) in pps'
 
 resolveTrade :: OrderType -> Order -> ProposalBook -> PriceTimeOrdList
-resolveTrade FillAndKill o = fillAndKill p (oQty o) . toPriceTimeOrdList (oVerb o) . M.elems where
+resolveTrade FillAndKill o = fillAndKill p (getMTSQty $ oQuantity o) . toPriceTimeOrdList (oVerb o) . M.elems where
    p :: Price
    p = (if oVerb o == Buy then id else negate) $ oPrice o
 resolveTrade AllOrNone _ = undefined
@@ -154,8 +151,8 @@ fetchByPriceTime v pc t = head' t . filter (\p -> (getProposalTimeOfDay p) == t 
 
 proposalAggressionCheck :: Verb -> Quantity -> Proposal -> Bool
 proposalAggressionCheck _    0 = not . isActive
-proposalAggressionCheck Buy  q = (== q) . getMTSQty . pAskQty
-proposalAggressionCheck Sell q = (== q) . getMTSQty . pBidQty
+proposalAggressionCheck Buy  q = (== q) . qtyFromLots . pAskQty
+proposalAggressionCheck Sell q = (== q) . qtyFromLots . pBidQty
 
 proposalAggressionPairing :: Verb -> PriceTimeOrdList -> [Proposal] -> [(Quantity, Proposal)]
 proposalAggressionPairing _ [] _ = []
