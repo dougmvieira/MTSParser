@@ -10,13 +10,11 @@ import qualified Data.Vector as V
 import qualified Data.Map as M
 
 
-type Price = Double
-type Quantity = Double
 type Bid = (Price, Quantity)
 type Ask = (Price, Quantity)
+type ID = Int
 
-type ProposalID = Int
-type ProposalBook = M.Map ProposalID Proposal
+type ProposalBook = M.Map ID Proposal
 
 type LOBSide = M.Map Price Quantity
 type AskSide = LOBSide
@@ -53,12 +51,13 @@ pAskXRay p = (pAskPrice p, qtyFromLots . pAskQty $ p)
 isActive :: Proposal -> Bool
 isActive p = pCheck_Logon p == 0 && pStatus p == Active
 
-buildProposalMap :: V.Vector Proposal -> M.Map TimeOfDay [Proposal]
-buildProposalMap = M.fromListWith (++) . map makeKeyVal . onlyMTS . V.toList where
+filterMTS :: [Proposal] -> [Proposal]
+filterMTS = filter ((==mtsCode) . pMarketCode)
+
+buildProposalTimeSeries :: V.Vector Proposal -> M.Map TimeOfDay [Proposal]
+buildProposalTimeSeries = M.fromListWith (++) . map makeKeyVal . filterMTS . V.toList where
   makeKeyVal :: Proposal -> (TimeOfDay, [Proposal])
   makeKeyVal p = (getProposalTimeOfDay p, [p])
-  onlyMTS :: [Proposal] -> [Proposal]
-  onlyMTS = filter ((==mtsCode) . pMarketCode)
 
 buildOrderMap :: BondCode -> Day -> V.Vector Order -> M.Map TimeOfDay Order
 buildOrderMap bc d = M.fromListWith err . map makeKeyVal . onlyMTS . filterDay . filterBond . V.toList where
@@ -75,7 +74,7 @@ buildOrderMap bc d = M.fromListWith err . map makeKeyVal . onlyMTS . filterDay .
 buildEventMap :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay Event
 buildEventMap ps os = M.unionWith (\(p, _) (_, o) -> (p, o)) pm om where
   pm :: M.Map TimeOfDay Event
-  pm = fmap (\p -> (p, Nothing)) $ buildProposalMap ps
+  pm = fmap (\p -> (p, Nothing)) $ buildProposalTimeSeries ps
   om :: M.Map TimeOfDay Event
   om = fmap (\o -> ([], Just o)) $ buildOrderMap bc d os
   p :: Proposal
