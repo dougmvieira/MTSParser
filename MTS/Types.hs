@@ -22,6 +22,7 @@ module MTS.Types (MTSEvent(..),
                   Order(..),
 
                   bidPrice,
+                  signedBidPrice,
                   askPrice,
                   bidQty,
                   askQty) where
@@ -91,6 +92,9 @@ data Proposal = Proposal { pMarketCode  :: Text
 
 bidPrice :: Proposal -> Price
 bidPrice = pBidPrice
+
+signedBidPrice :: Proposal -> Price
+signedBidPrice = negate . pBidPrice
 
 askPrice :: Proposal -> Price
 askPrice = pAskPrice

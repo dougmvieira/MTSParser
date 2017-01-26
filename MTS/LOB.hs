@@ -3,6 +3,8 @@ module MTS.LOB (combineMTSTime, shoot, rebuildEventBook, rebuildLOB, rebuildLOBX
 import MTS.Types
 import MTS.Decode
 import Data.Fixed (Pico)
+import Data.List (sortOn)
+import Data.Monoid
 import Data.Text (Text, pack)
 import Data.Time (Day,
                   TimeOfDay(..))
@@ -15,6 +17,8 @@ type Ask = (Price, Quantity)
 type ID = Int
 
 type ProposalBook = M.Map ID Proposal
+type PrioritisedBook = SignedBook
+type SignedBook = [((Price, TimeOfDay), Quantity)]
 
 type LOBSide = M.Map Price Quantity
 type AskSide = LOBSide
@@ -25,7 +29,6 @@ type Event = ([Proposal], Maybe Order)
 type EventBook = (ProposalBook, Maybe Order)
 
 type BondCode = Text
-
 
 addPico :: TimeOfDay -> Pico -> TimeOfDay
 addPico (TimeOfDay h m p) p' = TimeOfDay h m (p + p')
@@ -50,6 +53,9 @@ pAskXRay p = (pAskPrice p, qtyFromLots . pAskQty $ p)
 
 isActive :: Proposal -> Bool
 isActive p = pCheck_Logon p == 0 && pStatus p == Active
+
+filterActive :: [Proposal] -> [Proposal]
+filterActive = filter isActive
 
 filterMTS :: [Proposal] -> [Proposal]
 filterMTS = filter ((==mtsCode) . pMarketCode)
@@ -115,68 +121,101 @@ makeProposalBook = sanityCheck . M.fromList . map (\p -> (pProposalID p, p)) whe
             then error $ "Invalid duplicate time proposals: " ++ show pb
             else pb
 
-type PriceTimeOrdList = [((Price, TimeOfDay), Quantity)]
+toSignedBook :: [Proposal] -> SignedBook
+toSignedBook = foldl (\sb p ->
+   case pQuotingSide p
+   of BothSides -> ((signedBidPrice p, time p), bidQty p):((askPrice p, time p), askQty p):sb
+      AskOnly   -> ((askPrice p, time p), askQty p):sb
+      BidOnly   -> ((signedBidPrice p, time p), bidQty p):sb) mempty
 
-toPriceTimeOrdList :: Verb -> [Proposal] -> PriceTimeOrdList
-toPriceTimeOrdList v = M.toAscList . M.fromList . map (\p -> ((pPrice p, getProposalTimeOfDay p), pQty p)) . filter isActive where
-   pPrice :: Proposal -> Price
-   pPrice = if v == Buy then pAskPrice else negate . pBidPrice
-   pQty :: Proposal -> Quantity
-   pQty = if v == Buy then qtyFromLots . pAskQty else qtyFromLots . pBidQty
+filterSide :: Verb -> SignedBook -> SignedBook
+filterSide Buy  = filter $ (>0) . fst . fst
+filterSide Sell = filter $ (<0) . fst . fst
 
-aggressProposals :: Price -> (Quantity, PriceTimeOrdList, PriceTimeOrdList) -> (Quantity, PriceTimeOrdList, PriceTimeOrdList)
-aggressProposals _  (q, acc, []) = (q, acc, [])
-aggressProposals p' input@(q', acc, ((p, t), q):xs)
-   | p <= p' && q <= q' = aggressProposals p' (q' - q, ((p, t), 0):acc, xs)
-   | p <= p'            = (0, ((p, t), q - q'):acc, xs)
-   | otherwise          = input
+prioritise :: SignedBook -> PrioritisedBook
+prioritise = sortOn fst
 
-fillAndKill :: Price -> Quantity -> PriceTimeOrdList -> PriceTimeOrdList
-fillAndKill pc q pps = let (_, pps', _) = aggressProposals pc (q, [], pps) in pps'
+toPrioritisedBook :: Verb -> [Proposal] -> PrioritisedBook
+toPrioritisedBook v = prioritise . filterSide v . toSignedBook . filterActive
 
-resolveTrade :: OrderType -> Order -> ProposalBook -> PriceTimeOrdList
-resolveTrade FillAndKill o = fillAndKill p (getMTSQty $ oQuantity o) . toPriceTimeOrdList (oVerb o) . M.elems where
-   p :: Price
-   p = (if oVerb o == Buy then id else negate) $ oPrice o
-resolveTrade AllOrNone _ = undefined
+walkTheLOB :: Price -> (Quantity, PrioritisedBook, PrioritisedBook) -> (Quantity, PrioritisedBook, PrioritisedBook)
+walkTheLOB _  (q, [], trades) = (q, [], trades)
+walkTheLOB pLim state@(qLim, ((p, t), q):lob, trades)
+   | p <= pLim && q <= qLim = walkTheLOB pLim (qLim - q, lob, ((p, t),    q):trades)
+   | p <= pLim              =                 (       0, lob, ((p, t), qLim):trades)
+   | otherwise              = state
 
-head' t [] = error $ "fetchByPrice failed at " ++ show t
-head' _ l = head l
+fillAndKill :: Price -> Quantity -> PrioritisedBook -> PrioritisedBook
+fillAndKill p q lob = let (_, _, trades) = walkTheLOB p (q, lob, mempty) in reverse trades
 
-fetchByPriceTime :: Verb -> Price -> TimeOfDay -> [Proposal] -> Proposal
-fetchByPriceTime v pc t = head' t . filter (\p -> (getProposalTimeOfDay p) == t && (pPrice p) == pc) where
-   pPrice :: Proposal -> Price
-   pPrice = if v == Buy then pAskPrice else negate . pBidPrice
+allOrNone :: Price -> Quantity -> PrioritisedBook -> PrioritisedBook
+allOrNone p q lob = let (qRem, _, trades) = walkTheLOB p (q, lob, mempty)
+                    in if qRem == 0 then reverse trades else mempty
 
-proposalAggressionCheck :: Verb -> Quantity -> Proposal -> Bool
-proposalAggressionCheck _    0 = not . isActive
-proposalAggressionCheck Buy  q = (== q) . qtyFromLots . pAskQty
-proposalAggressionCheck Sell q = (== q) . qtyFromLots . pBidQty
+executeOrderWith :: OrderType -> Price -> Quantity -> PrioritisedBook -> PrioritisedBook
+executeOrderWith FillAndKill = fillAndKill
+executeOrderWith AllOrNone   = allOrNone
 
-proposalAggressionPairing :: Verb -> PriceTimeOrdList -> [Proposal] -> [(Quantity, Proposal)]
-proposalAggressionPairing _ [] _ = []
-proposalAggressionPairing v (((p, t), q):ptol) ps = (q, fetchByPriceTime v p t ps):proposalAggressionPairing v ptol ps
+executeOrder :: Order -> PrioritisedBook -> PrioritisedBook
+executeOrder = executeOrderWith <$> oOrderType <*> signedPrice <*> qty
 
-checkAggression :: Verb -> PriceTimeOrdList -> [Proposal] -> Bool
-checkAggression v ptol ps = (length ptol == length ps
-   && (all (uncurry $ proposalAggressionCheck v) $ proposalAggressionPairing v ptol ps))
+executedProposals :: Order -> PrioritisedBook -> PrioritisedBook
+executedProposals o pb = zipWith diffSnd pb $ executeOrder o pb
+   where diffSnd :: Num b => (a, b) -> (a, b) -> (a, b)
+         diffSnd (i, x) (_, y) = (i, x - y)
 
-matchingEngine :: [Proposal] -> Order -> ProposalBook -> ProposalBook
-matchingEngine ps o pb = if   checkAggression (oVerb o) aggression ps
-                         then M.union (makeProposalBook ps) pb
-             else error $ "New state of LOB is not consistent with market order" ++ show o ++ show aggression where
-             aggression :: PriceTimeOrdList
-             aggression = (resolveTrade (oOrderType o) o pb)
+isProposalAtSignedPrice :: Price -> Proposal -> Bool
+isProposalAtSignedPrice p
+   | p < 0 = (== p) . signedBidPrice
+   | p > 0 = (== p) .       askPrice
+
+isAtTime :: MTSEvent a => TimeOfDay -> a -> Bool
+isAtTime t = (== t) . time
+
+fetchByPriceTime :: Price -> TimeOfDay -> [Proposal] -> Proposal
+fetchByPriceTime p t ps = case filter ((&&) <$> isAtTime t <*> isProposalAtSignedPrice p) ps
+                          of []  -> error $ "No proposal found at time " ++ show t ++ " and price " ++ show p ++ "."
+                             [r] -> r
+                             _   -> error $ "Multiple proposals have the same price and time."
+
+fromPrioritisedBook :: [Proposal] -> PrioritisedBook -> [Proposal]
+fromPrioritisedBook ps = map (\p -> uncurry fetchByPriceTime (fst p) ps)
+
+implyVerb :: PrioritisedBook -> Verb
+implyVerb [] = error "Cannot imply verb from empty prioritised book."
+implyVerb ((_, q):_)
+   | q < 0 = Sell
+   | q > 0 = Buy
+implyVerb pb = error . show $ pb
+
+validateNewOrder :: Verb -> Proposal -> Quantity -> Proposal -> Bool
+validateNewOrder Buy  p 0 p' = bidQty p' == bidQty p && not (isActive p') && bidPrice p' == bidPrice p -- Strangely, the askQty can change in this case
+validateNewOrder Sell p 0 p' = askQty p' == askQty p && bidQty p' == bidQty p && not (isActive p') && askPrice p' == askPrice p
+validateNewOrder Buy  p q p' = askQty p' ==        q && bidQty p' == bidQty p &&      isActive p'  && bidPrice p' == bidPrice p
+validateNewOrder Sell p q p' = askQty p' == askQty p && bidQty p' ==        q &&      isActive p'  && askPrice p' == askPrice p
+
+validateExecution :: Verb -> [Proposal] -> PrioritisedBook -> [Proposal] -> Bool
+validateExecution v ps pb ps' = let psAligned = fromPrioritisedBook ps pb
+                                    qs = map snd pb
+                                in  length psAligned == length ps'
+                                    && all (uncurry3 $ validateNewOrder v) (zip3 psAligned qs ps')
+   where uncurry3 :: (a -> b -> c -> r) -> ((a, b, c) -> r)
+         uncurry3 f (x, y, z) = f x y z
+
+validatedExecutedProposals :: [Proposal] -> Order -> [Proposal] -> [Proposal]
+validatedExecutedProposals ps o ps' = if validateExecution (oVerb o) ps (executedProposals o $ toPrioritisedBook (oVerb o) ps) ps'
+                                      then ps'
+                                      else error $ "New state of LOB is not consistent with market order: " ++ show o
 
 rebuildEventBook :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay EventBook
 rebuildEventBook ps os = M.fromDescList . init . M.foldlWithKey accFun acc0 $ buildEventMap ps os where
    updateEBook :: Event -> EventBook -> EventBook
    updateEBook (ps, Nothing) (pb, o) = (M.union (makeProposalBook ps) pb, o)
-   updateEBook (ps, Just o) (pb, _) = (matchingEngine ps o pb, Just o)
+   updateEBook (ps, Just o) (pb, _) = (M.union (makeProposalBook . validatedExecutedProposals (M.elems pb) o $ ps) pb, Just o)
    accFun :: [(TimeOfDay, EventBook)] -> TimeOfDay -> Event -> [(TimeOfDay, EventBook)]
    accFun acc@((_, eb):xs) k e = (k, updateEBook e eb):acc
    acc0 :: [(TimeOfDay, EventBook)]
-   acc0 = [(TimeOfDay 0 0 0, (M.empty, Nothing))]
+   acc0 = [(TimeOfDay 0 0 0, (mempty, Nothing))]
 
 rebuildLOB :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay Snapshot
 rebuildLOB ps os = fmap shoot $ rebuildEventBook ps os
