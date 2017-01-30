@@ -21,6 +21,7 @@ module MTS.Types (MTSEvent(..),
                   Fill(..),
                   Order(..),
 
+                  expiry,
                   bidPrice,
                   signedBidPrice,
                   askPrice,
@@ -89,6 +90,9 @@ data Proposal = Proposal { pMarketCode  :: Text
                          , pAskYield    :: MTSYield
                          , pProposalID  :: Int
                          , pQuotingSide :: MTSSide } deriving (Show, Generic)
+
+expiry :: Proposal -> TimeOfDay
+expiry = addPico <$> getMTSTime . pEndTime <*> getMTSPico . pEndTimeMsec
 
 bidPrice :: Proposal -> Price
 bidPrice = pBidPrice

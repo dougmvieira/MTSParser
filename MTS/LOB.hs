@@ -3,7 +3,8 @@ module MTS.LOB (combineMTSTime, shoot, rebuildEventBook, rebuildLOB, rebuildLOBX
 import MTS.Types
 import MTS.Decode
 import Data.Fixed (Pico)
-import Data.List (sortOn)
+import Data.List (find, sortOn)
+import Data.Maybe (fromJust)
 import Data.Monoid
 import Data.Text (Text, pack)
 import Data.Time (Day,
@@ -54,11 +55,18 @@ pAskXRay p = (pAskPrice p, qtyFromLots . pAskQty $ p)
 isActive :: Proposal -> Bool
 isActive p = pCheck_Logon p == 0 && pStatus p == Active
 
+isNotExpired :: TimeOfDay -> Proposal -> Bool
+isNotExpired t = (>= t) . expiry
+
 filterActive :: [Proposal] -> [Proposal]
-filterActive = filter isActive
+filterActive ps = let t = maximum $ map time ps
+                  in filter ((&&) <$> isNotExpired t <*> isActive) ps
 
 filterMTS :: [Proposal] -> [Proposal]
 filterMTS = filter ((==mtsCode) . pMarketCode)
+
+findByID :: MTSEvent a => ID -> [a] -> Maybe a
+findByID i = find ((== i) . eventID)
 
 buildProposalTimeSeries :: V.Vector Proposal -> M.Map TimeOfDay [Proposal]
 buildProposalTimeSeries = M.fromListWith (++) . map makeKeyVal . filterMTS . V.toList where
@@ -91,7 +99,7 @@ buildEventMap ps os = M.unionWith (\(p, _) (_, o) -> (p, o)) pm om where
   bc = pBondCode p
 
 filterActiveProposals :: ProposalBook -> [Proposal]
-filterActiveProposals = filter isActive . M.elems
+filterActiveProposals = filterActive . M.elems
 
 aggregQties :: [(Price, Quantity)] -> LOBSide
 aggregQties = M.fromListWith (+)
@@ -141,9 +149,9 @@ toPrioritisedBook v = prioritise . filterSide v . toSignedBook . filterActive
 walkTheLOB :: Price -> (Quantity, PrioritisedBook, PrioritisedBook) -> (Quantity, PrioritisedBook, PrioritisedBook)
 walkTheLOB _  (q, [], trades) = (q, [], trades)
 walkTheLOB pLim state@(qLim, ((p, t), q):lob, trades)
-   | p <= pLim && q <= qLim = walkTheLOB pLim (qLim - q, lob, ((p, t),    q):trades)
-   | p <= pLim              =                 (       0, lob, ((p, t), qLim):trades)
-   | otherwise              = state
+   | p <= pLim && q < qLim = walkTheLOB pLim (qLim - q, lob, ((p, t),    q):trades)
+   | p <= pLim             =                 (       0, lob, ((p, t), qLim):trades)
+   | otherwise             = state
 
 fillAndKill :: Price -> Quantity -> PrioritisedBook -> PrioritisedBook
 fillAndKill p q lob = let (_, _, trades) = walkTheLOB p (q, lob, mempty) in reverse trades
@@ -190,22 +198,27 @@ implyVerb pb = error . show $ pb
 
 validateNewOrder :: Verb -> Proposal -> Quantity -> Proposal -> Bool
 validateNewOrder Buy  p 0 p' = bidQty p' == bidQty p && not (isActive p') && bidPrice p' == bidPrice p -- Strangely, the askQty can change in this case
-validateNewOrder Sell p 0 p' = askQty p' == askQty p && bidQty p' == bidQty p && not (isActive p') && askPrice p' == askPrice p
+validateNewOrder Sell p 0 p' = askQty p' == askQty p && not (isActive p') && askPrice p' == askPrice p -- Strangely, the bidQty can also change in this case
 validateNewOrder Buy  p q p' = askQty p' ==        q && bidQty p' == bidQty p &&      isActive p'  && bidPrice p' == bidPrice p
 validateNewOrder Sell p q p' = askQty p' == askQty p && bidQty p' ==        q &&      isActive p'  && askPrice p' == askPrice p
 
 validateExecution :: Verb -> [Proposal] -> PrioritisedBook -> [Proposal] -> Bool
 validateExecution v ps pb ps' = let psAligned = fromPrioritisedBook ps pb
+                                    psAligned' = map (\p -> findByID (eventID p) ps') psAligned
                                     qs = map snd pb
-                                in  length psAligned == length ps'
-                                    && all (uncurry3 $ validateNewOrder v) (zip3 psAligned qs ps')
+                                in  all (not . null) psAligned'
+                                    && all (uncurry3 $ validateNewOrder v) (zip3 psAligned qs (map fromJust psAligned'))
    where uncurry3 :: (a -> b -> c -> r) -> ((a, b, c) -> r)
          uncurry3 f (x, y, z) = f x y z
 
 validatedExecutedProposals :: [Proposal] -> Order -> [Proposal] -> [Proposal]
-validatedExecutedProposals ps o ps' = if validateExecution (oVerb o) ps (executedProposals o $ toPrioritisedBook (oVerb o) ps) ps'
+validatedExecutedProposals ps o ps' = let pb = toPrioritisedBook (oVerb o) ps
+                                      in if validateExecution (oVerb o) ps (executedProposals o pb) ps'
                                       then ps'
-                                      else error $ "New state of LOB is not consistent with market order: " ++ show o
+                                      else let trades = executeOrder o pb
+                                               psAligned = fromPrioritisedBook ps trades
+                                               psAligned' = map (\p -> findByID (eventID p) ps') psAligned
+                                           in  error $ "New state of LOB is not consistent with market order: " ++ show o ++ "\nCurrent affected proposals are: " ++ show psAligned ++ "\nNew proposals are: " ++ show psAligned' ++ "\nMachine engine processed: " ++ show trades
 
 rebuildEventBook :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay EventBook
 rebuildEventBook ps os = M.fromDescList . init . M.foldlWithKey accFun acc0 $ buildEventMap ps os where
