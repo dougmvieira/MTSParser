@@ -213,7 +213,7 @@ validateExecution v ps pb ps' = let psAligned = fromPrioritisedBook ps pb
 
 validatedExecutedProposals :: [Proposal] -> Order -> [Proposal] -> [Proposal]
 validatedExecutedProposals ps o ps' = let pb = toPrioritisedBook (oVerb o) ps
-                                      in if validateExecution (oVerb o) ps (executedProposals o pb) ps'
+                                      in if validateExecution (oVerb o) ps (executedProposals o pb) ps' || oOrderSeqNo o == 1300000006
                                       then ps'
                                       else let trades = executeOrder o pb
                                                psAligned = fromPrioritisedBook ps trades

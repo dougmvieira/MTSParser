@@ -68,6 +68,42 @@ testRebuildLOBWithTrades = do
   (Right os) <- return . parseOrder $ osText
   B.writeFile "dataWithTrades.txt" . encodeDepth3LOB $ rebuildLOB ps os
 
+testRebuildOn :: V.Vector Order -> String -> IO ()
+testRebuildOn os bondname = do
+  putStrLn $ "Rebuilding bond " ++ bondname
+  psText <- B.readFile $ bondname ++ ".txt"
+  (Right ps) <- return . parseProposal $ psText
+  B.writeFile (bondname ++ "rebuilt.txt") . encodeDepth3LOB $ rebuildLOB ps os
+
+bondnames = ["IT0000366655",
+             "IT0001086567",
+             "IT0001174611",
+             "IT0001278511",
+             "IT0001444378",
+             "IT0003242747",
+             "IT0003256820",
+             "IT0003493258",
+             "IT0003535157",
+             "IT0003644769",
+             "IT0003745541",
+             "IT0003934657",
+             "IT0004009673",
+             "IT0004019581",
+             "IT0004085210",
+             "IT0004164775",
+             "IT0004243512",
+             "IT0004273493",
+             "IT0004286966",
+             "IT0004356843",
+             "IT0004361041",
+             "IT0004380546",
+             "IT0004423957"]
+
+testRebuildOnAllBTPs = do
+  osText <- orderExamples
+  (Right os) <- return . parseOrder $ osText
+  mapM_ (testRebuildOn os) bondnames
+
 main = do
   testOrder
   testProposal

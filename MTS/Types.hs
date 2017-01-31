@@ -55,7 +55,7 @@ class MTSOneSidedEvent a where
 type Quantity = Double
 type Price = Double
 
-data MTSStatus = Active | Suspended | Unknown deriving (Eq, Show)
+data MTSStatus = Active | Suspended | SuspendedByGovernance | DeletedByMember | CompletelyFilled deriving (Eq, Show)
 data MTSSide = BothSides | AskOnly | BidOnly deriving (Eq, Show)
 data Verb = Buy | Sell deriving (Eq, Show)
 data OrderType = AllOrNone | FillAndKill deriving (Eq, Show)
