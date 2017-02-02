@@ -75,7 +75,7 @@ testRebuildOn os bondname = do
   (Right ps) <- return . parseProposal $ psText
   B.writeFile (bondname ++ "rebuilt.txt") . encodeDepth3LOB $ rebuildLOB ps os
 
-bondnames = ["IT0000366655",
+{-bondnames = ["IT0000366655",
              "IT0001086567",
              "IT0001174611",
              "IT0001278511",
@@ -83,8 +83,8 @@ bondnames = ["IT0000366655",
              "IT0003242747",
              "IT0003256820",
              "IT0003493258",
-             "IT0003535157",
-             "IT0003644769",
+             "IT0003535157",-}
+bondnames = ["IT0003644769",
              "IT0003745541",
              "IT0003934657",
              "IT0004009673",
