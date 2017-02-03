@@ -1,4 +1,4 @@
-module MTS.LOB (shoot, rebuildEventBook, rebuildLOB, rebuildLOBXRay, Price, Quantity, Bid, Ask, LOBSide, AskSide, BidSide, Snapshot) where
+module MTS.LOB (shoot, rebuildEventBook, rebuildLOB, rebuildLOBWithLog, rebuildLOBXRay, Price, Quantity, Bid, Ask, LOBSide, AskSide, BidSide, Snapshot) where
 
 import MTS.Types
 import MTS.Decode
@@ -28,15 +28,18 @@ type Snapshot = (BidSide, AskSide)
 
 type Event = ([Proposal], Maybe Order)
 type EventBook = (ProposalBook, Maybe Order)
-type AugmentedEventBook = (ProposalBook, Maybe Order, Maybe Proposal, PrioritisedBook)
+type AugmentedEventBook = (ProposalBook, Maybe Order, Maybe Proposal, PrioritisedBook, String)
 
 type BondCode = Text
 
 type SymEither a = Either a a
 
 
-fstQ :: (a, b, c, d) -> a
-fstQ (x, _, _, _) = x
+fst5 :: (a, b, c, d, e) -> a
+fst5 (x, _, _, _, _) = x
+
+fifth5 :: (a, b, c, d, e) -> e
+fifth5 (_, _, _, _, x) = x
 
 symEither :: (a -> b) -> SymEither a -> b
 symEither f = either f f
@@ -113,13 +116,13 @@ aggregQties = M.fromListWith (+)
 
 -- |Shoot a snapshot of the visible LOB
 shoot :: AugmentedEventBook -> Snapshot
-shoot eb = (aggregQties . map pBid . filterActiveProposals . fstQ $ eb,
-            aggregQties . map pAsk . filterActiveProposals . fstQ $ eb)
+shoot eb = (aggregQties . map pBid . filterActiveProposals . fst5 $ eb,
+            aggregQties . map pAsk . filterActiveProposals . fst5 $ eb)
 
 -- |Shoot a snapshot of the LOB with hidden orders
 shootXRay :: AugmentedEventBook -> Snapshot
-shootXRay eb = (aggregQties . map pBidXRay . filterActiveProposals . fstQ $ eb,
-                aggregQties . map pAskXRay . filterActiveProposals . fstQ $ eb)
+shootXRay eb = (aggregQties . map pBidXRay . filterActiveProposals . fst5 $ eb,
+                aggregQties . map pAskXRay . filterActiveProposals . fst5 $ eb)
 
 hasDuplicate :: Eq a => [a] -> Bool
 hasDuplicate [] = False
@@ -174,8 +177,8 @@ executeOrderWith AllOrNone   = allOrNone
 executeOrder :: Order -> PrioritisedBook -> PrioritisedBook
 executeOrder = executeOrderWith <$> oOrderType <*> signedPrice <*> qty
 
-executedProposals :: Order -> PrioritisedBook -> PrioritisedBook
-executedProposals o pb = zipWith diffSnd pb $ executeOrder o pb
+executedProposals :: PrioritisedBook -> PrioritisedBook -> PrioritisedBook
+executedProposals trades pb = zipWith diffSnd pb trades
    where diffSnd :: Num b => (a, b) -> (a, b) -> (a, b)
          diffSnd (i, x) (_, y) = (i, x - y)
 
@@ -218,32 +221,42 @@ validateExecution v ps pb ps' = let psAligned = fromPrioritisedBook ps pb
    where uncurry3 :: (a -> b -> c -> r) -> ((a, b, c) -> r)
          uncurry3 f (x, y, z) = f x y z
 
-validatedExecutedProposals :: [Proposal] -> Order -> [Proposal] -> [Proposal]
-validatedExecutedProposals ps o ps' = let pb = toPrioritisedBook (oVerb o) ps
-                                      in if validateExecution (oVerb o) ps (executedProposals o pb) ps' || oOrderSeqNo o `elem` [1300000006, 1100000028, 1100000033]
-                                         then ps' else error $ validatedExecutedProposalsErrorLog ps o ps'
+validatedTrades :: [Proposal] -> Order -> [Proposal] -> SymEither PrioritisedBook
+validatedTrades ps o ps' = let pb = toPrioritisedBook (oVerb o) ps
+                               trades = executeOrder o pb
+                           in if   validateExecution (oVerb o) ps (executedProposals trades pb) ps'
+                              then Right trades
+                              else Left trades
 
-validatedExecutedProposalsErrorLog :: [Proposal] -> Order -> [Proposal] -> String
-validatedExecutedProposalsErrorLog ps o ps' = let trades = executeOrder o $ toPrioritisedBook (oVerb o) ps
-                                                  psAligned = fromPrioritisedBook ps trades
-                                                  psAligned' = alignEventByID psAligned ps'
-                                              in  "New state of LOB is not consistent with market order: " ++ show o
-                                                  ++ "\nCurrent affected proposals are: " ++ show psAligned
-                                                  ++ "\nNew proposals are: " ++ show psAligned'
-                                                  ++ "\nMachine engine processed: " ++ show trades
+tradesErrorLog :: [Proposal] -> [Proposal] -> Order -> PrioritisedBook -> String
+tradesErrorLog ps ps' o trades = let psAligned = fromPrioritisedBook ps trades
+                                     psAligned' = alignEventByID psAligned ps'
+                                 in  "New state of LOB is not consistent with market order: " ++ show o
+                                     ++ "\nCurrent affected proposals are: " ++ show psAligned
+                                     ++ "\nNew proposals are: " ++ show psAligned'
+                                     ++ "\nMachine engine processed: " ++ show trades
+                                     ++ "\n\n"
 
 updateEventBook :: AugmentedEventBook -> Event -> AugmentedEventBook
-updateEventBook (pb, o, _, _) (ps, Nothing) = (M.union (makeProposalBook ps) pb, o, Nothing, [])
-updateEventBook (pb, _, _, _) (ps, Just o) = (M.union (makeProposalBook . validatedExecutedProposals (M.elems pb) o $ ps) pb, Just o, Nothing, [])
+updateEventBook (pb, _, _, _, _) (ps, Nothing) = (M.union (makeProposalBook ps) pb, Nothing, Nothing, mempty, mempty)
+updateEventBook (pb, _, _, _, _) (ps,  Just o) = let eitherTrades = validatedTrades (M.elems pb) o ps
+                                                     log = either (tradesErrorLog (M.elems pb) ps o) (const mempty) eitherTrades
+                                                 in (M.union (makeProposalBook ps) pb, Just o, Nothing, symEither id eitherTrades, log)
 
 rebuildEventBook :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay AugmentedEventBook
 rebuildEventBook psVec osVec = let ps = V.toList psVec
                                    os = V.toList osVec
-                                   emptyBook = (TimeOfDay 0 0 0, (mempty, Nothing, Nothing, mempty))
+                                   emptyBook = (TimeOfDay 0 0 0, (mempty, Nothing, Nothing, mempty, mempty))
                                in  M.fromDescList . init . scanlMap updateEventBook emptyBook $ buildEventMap ps os
 
 rebuildLOB :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay Snapshot
 rebuildLOB ps os = fmap shoot $ rebuildEventBook ps os
+
+rebuildLOBWithLog :: V.Vector Proposal -> V.Vector Order -> IO (M.Map TimeOfDay Snapshot)
+rebuildLOBWithLog ps os = do
+   (lob, log) <- return $ (,) <$> fmap shoot <*> mconcat . map fifth5 . M.elems $ rebuildEventBook ps os
+   putStrLn log
+   return lob
 
 rebuildLOBXRay :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay Snapshot
 rebuildLOBXRay ps os = fmap shootXRay $ rebuildEventBook ps os
