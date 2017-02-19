@@ -6,12 +6,13 @@ import Data.Fixed (Pico)
 import Data.List (find, sortOn)
 import Data.Maybe (fromJust)
 import Data.Monoid
-import Data.Text (Text, pack)
+import Data.Text (Text, pack, unpack)
 import Data.Time (Day,
                   TimeOfDay(..))
 import qualified Data.Vector as V
 import qualified Data.Map as M
 
+data ParseError = OrderMatching | ProposalMatching deriving (Read, Show)
 
 type Bid = (Price, Quantity)
 type Ask = (Price, Quantity)
@@ -28,7 +29,7 @@ type Snapshot = (BidSide, AskSide)
 
 type Event = ([Proposal], Maybe Order)
 type EventBook = (ProposalBook, Maybe Order)
-type AugmentedEventBook = (ProposalBook, Maybe Order, Maybe Proposal, PrioritisedBook, String)
+type AugmentedEventBook = (ProposalBook, Maybe Order, Maybe Proposal, PrioritisedBook, [ParseError])
 
 type BondCode = Text
 
@@ -43,6 +44,9 @@ fifth5 (_, _, _, _, x) = x
 
 symEither :: (a -> b) -> SymEither a -> b
 symEither f = either f f
+
+constEither :: a -> a -> Either b c -> a
+constEither x y = either (const x) (const y)
 
 scanlMap :: (a -> b -> a) -> (k, a) -> M.Map k b -> [(k, a)]
 scanlMap f acc0 = M.foldlWithKey (\accs@((_, x):_) k b -> (k, (f x b)):accs) [acc0]
@@ -228,20 +232,38 @@ validatedTrades ps o ps' = let pb = toPrioritisedBook (oVerb o) ps
                               then Right trades
                               else Left trades
 
-tradesErrorLog :: [Proposal] -> [Proposal] -> Order -> PrioritisedBook -> String
-tradesErrorLog ps ps' o trades = let psAligned = fromPrioritisedBook ps trades
-                                     psAligned' = alignEventByID psAligned ps'
-                                 in  "New state of LOB is not consistent with market order: " ++ show o
-                                     ++ "\nCurrent affected proposals are: " ++ show psAligned
-                                     ++ "\nNew proposals are: " ++ show psAligned'
-                                     ++ "\nMachine engine processed: " ++ show trades
-                                     ++ "\n\n"
+orderMatchingLongErrorLog :: [Proposal] -> [Proposal] -> Order -> PrioritisedBook -> String
+orderMatchingLongErrorLog ps ps' o trades = let psAligned = fromPrioritisedBook ps trades
+                                                psAligned' = alignEventByID psAligned ps'
+                                            in  "New state of LOB is not consistent with market order: " ++ show o
+                                                ++ "\nCurrent affected proposals are: " ++ show psAligned
+                                                ++ "\nNew proposals are: " ++ show psAligned'
+                                                ++ "\nMachine engine processed: " ++ show trades
+                                                ++ "\n\n"
+
+orderMatchingShortErrorLog :: AugmentedEventBook -> String
+orderMatchingShortErrorLog (_,  Just o, _, _, _) = unwords [unpack $ bondCode o,
+                                                            show $ date o,
+                                                            show $ time o]
+                                                   ++ ". Order matching error.\n"
+orderMatchingShortErrorLog _ = "WHAT!? Order matching error without an order!?.\n"
+
+errorLogWith :: (AugmentedEventBook -> String)
+             -> (AugmentedEventBook -> String)
+             -> AugmentedEventBook
+             -> String
+errorLogWith orderLog proposalLog eb@(_, _, _, _, err) = mconcat $ logEach <$> err 
+   where logEach :: ParseError -> String
+         logEach OrderMatching = orderLog eb
+         logEach ProposalMatching = proposalLog eb
 
 updateEventBook :: AugmentedEventBook -> Event -> AugmentedEventBook
 updateEventBook (pb, _, _, _, _) (ps, Nothing) = (M.union (makeProposalBook ps) pb, Nothing, Nothing, mempty, mempty)
 updateEventBook (pb, _, _, _, _) (ps,  Just o) = let eitherTrades = validatedTrades (M.elems pb) o ps
-                                                     log = either (tradesErrorLog (M.elems pb) ps o) (const mempty) eitherTrades
-                                                 in (M.union (makeProposalBook ps) pb, Just o, Nothing, symEither id eitherTrades, log)
+                                                     log = constEither [OrderMatching] [] eitherTrades
+                                                     pb'  = M.union (makeProposalBook ps) pb
+                                                     trades = symEither id eitherTrades
+                                                 in  (pb', Just o, Nothing, trades, log)
 
 rebuildEventBook :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay AugmentedEventBook
 rebuildEventBook psVec osVec = let ps = V.toList psVec
@@ -254,7 +276,7 @@ rebuildLOB ps os = fmap shoot $ rebuildEventBook ps os
 
 rebuildLOBWithLog :: V.Vector Proposal -> V.Vector Order -> IO (M.Map TimeOfDay Snapshot)
 rebuildLOBWithLog ps os = do
-   (lob, log) <- return $ (,) <$> fmap shoot <*> mconcat . map fifth5 . M.elems $ rebuildEventBook ps os
+   (lob, log) <- return $ (,) <$> fmap shoot <*> mconcat . fmap (errorLogWith orderMatchingShortErrorLog (const mempty)) . M.elems $ rebuildEventBook ps os
    putStrLn log
    return lob
 
