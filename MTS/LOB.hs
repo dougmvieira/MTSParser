@@ -2,6 +2,7 @@ module MTS.LOB (shoot, rebuildEventBook, rebuildLOB, rebuildLOBWithLog, rebuildL
 
 import MTS.Types
 import MTS.Decode
+import Control.Applicative
 import Data.Fixed (Pico)
 import Data.List (find, sortOn)
 import Data.Maybe (fromJust)
@@ -36,6 +37,9 @@ type BondCode = Text
 type SymEither a = Either a a
 
 
+choice2 :: (Alternative f, Alternative g) => (f a, g b) -> (f a, g b) -> (f a, g b)
+choice2 (x, y) (x', y') = (x <|> x', y <|> y')
+
 fst5 :: (a, b, c, d, e) -> a
 fst5 (x, _, _, _, _) = x
 
@@ -62,10 +66,13 @@ mtsCode = pack "MTS"
 
 pBid :: Proposal -> Bid
 pBid p = (pBidPrice p, qtyFromLots . pBidEbmQty $ p)
+
 pAsk :: Proposal -> Ask
 pAsk p = (pAskPrice p, qtyFromLots . pAskEbmQty $ p)
+
 pBidXRay :: Proposal -> Bid
 pBidXRay p = (pBidPrice p, qtyFromLots . pBidQty $ p)
+
 pAskXRay :: Proposal -> Ask
 pAskXRay p = (pAskPrice p, qtyFromLots . pAskQty $ p)
 
@@ -79,41 +86,30 @@ filterActive :: [Proposal] -> [Proposal]
 filterActive ps = let t = maximum $ map time ps
                   in filter ((&&) <$> isNotExpired t <*> isActive) ps
 
-filterMTS :: [Proposal] -> [Proposal]
-filterMTS = filter ((==mtsCode) . pMarketCode)
+filterMTS :: MTSEvent a => [a] -> [a]
+filterMTS = filter ((==mtsCode) . marketCode)
+
+filterDate :: MTSEvent a => Day -> [a] -> [a]
+filterDate d = filter $ (==d) . date
 
 findByID :: MTSEvent a => ID -> [a] -> Maybe a
 findByID i = find ((== i) . eventID)
 
-buildProposalTimeSeries :: [Proposal] -> M.Map TimeOfDay [Proposal]
-buildProposalTimeSeries = M.fromListWith (++) . map makeKeyVal . filterMTS where
-   makeKeyVal :: Proposal -> (TimeOfDay, [Proposal])
-   makeKeyVal p = (time p, [p])
+filterByBond :: MTSEvent a => Text -> [a] -> [a]
+filterByBond b = filter $ (==b) . bondCode
 
-buildOrderMap :: BondCode -> Day -> [Order] -> M.Map TimeOfDay Order
-buildOrderMap bc d = M.fromListWith err . map makeKeyVal . onlyMTS . filterDay . filterBond where
-  err = error "Found two orders with same time stamp."
-  makeKeyVal :: Order -> (TimeOfDay, Order)
-  makeKeyVal o = (time o, o)
-  onlyMTS :: [Order] -> [Order]
-  onlyMTS = filter $ (==mtsCode) . oMarketCode
-  filterDay :: [Order] -> [Order]
-  filterDay = filter $ (==d) . getMTSDay . oRefDate
-  filterBond :: [Order] -> [Order]
-  filterBond = filter $ (==bc) . oBondCode
+stampTime :: MTSEvent a => a -> (TimeOfDay, a)
+stampTime = (,) <$> time <*> id
 
-buildEventMap :: [Proposal] -> [Order] -> M.Map TimeOfDay Event
-buildEventMap ps os = M.unionWith (\(p, _) (_, o) -> (p, o)) pm om where
-  pm :: M.Map TimeOfDay Event
-  pm = fmap (\p -> (p, Nothing)) $ buildProposalTimeSeries ps
-  om :: M.Map TimeOfDay Event
-  om = fmap (\o -> ([], Just o)) $ buildOrderMap bc d os
-  p :: Proposal
-  p = head ps
-  d :: Day
-  d = getMTSDay . pRefDate $ p
-  bc :: BondCode
-  bc = pBondCode p
+toProposalTimeSeries :: [Proposal] -> M.Map TimeOfDay [Proposal]
+toProposalTimeSeries = M.fromListWith (++) . fmap (fmap pure . stampTime)
+
+toOrderTimeSeries :: [Order] -> M.Map TimeOfDay Order
+toOrderTimeSeries = M.fromListWith err . fmap stampTime where
+   err = error "Found two orders with same time stamp."
+
+pairWithOrders :: Alternative f => M.Map TimeOfDay (f a) -> [Order] -> M.Map TimeOfDay (f a, Maybe Order)
+pairWithOrders xs = M.unionWith choice2 ((\x -> (x, empty)) <$> xs) . fmap ((,) empty . Just) . toOrderTimeSeries
 
 filterActiveProposals :: ProposalBook -> [Proposal]
 filterActiveProposals = filterActive . M.elems
@@ -151,7 +147,7 @@ toSignedBook = foldl (\sb p ->
    case pQuotingSide p
    of BothSides -> ((signedBidPrice p, time p), bidQty p):((askPrice p, time p), askQty p):sb
       AskOnly   -> ((askPrice p, time p), askQty p):sb
-      BidOnly   -> ((signedBidPrice p, time p), bidQty p):sb) mempty
+      BidOnly   -> ((signedBidPrice p, time p), bidQty p):sb) empty
 
 filterSide :: Verb -> SignedBook -> SignedBook
 filterSide Buy  = filter $ (>0) . fst . fst
@@ -171,11 +167,11 @@ walkTheLOB pLim state@(qLim, ((p, t), q):lob, trades)
    | otherwise             = state
 
 fillAndKill :: Price -> Quantity -> PrioritisedBook -> PrioritisedBook
-fillAndKill p q lob = let (_, _, trades) = walkTheLOB p (q, lob, mempty) in reverse trades
+fillAndKill p q lob = let (_, _, trades) = walkTheLOB p (q, lob, empty) in reverse trades
 
 allOrNone :: Price -> Quantity -> PrioritisedBook -> PrioritisedBook
-allOrNone p q lob = let (qRem, _, trades) = walkTheLOB p (q, lob, mempty)
-                    in if qRem == 0 then reverse trades else mempty
+allOrNone p q lob = let (qRem, _, trades) = walkTheLOB p (q, lob, empty)
+                    in if qRem == 0 then reverse trades else empty
 
 executeOrderWith :: OrderType -> Price -> Quantity -> PrioritisedBook -> PrioritisedBook
 executeOrderWith FillAndKill = fillAndKill
@@ -261,7 +257,7 @@ errorLogWith orderLog proposalLog eb@(_, _, _, _, err) = mconcat $ logEach <$> e
          logEach ProposalMatching = proposalLog eb
 
 updateEventBook :: AugmentedEventBook -> Event -> AugmentedEventBook
-updateEventBook (pb, _, _, _, _) (ps, Nothing) = (M.union (makeProposalBook ps) pb, Nothing, Nothing, mempty, mempty)
+updateEventBook (pb, _, _, _, _) (ps, Nothing) = (M.union (makeProposalBook ps) pb, empty, empty, empty, empty)
 updateEventBook (pb, _, _, _, _) (ps,  Just o) = let eitherTrades = validatedTrades (M.elems pb) o ps
                                                      log = constEither [OrderMatching] [] eitherTrades
                                                      pb'  = M.union (makeProposalBook ps) pb
@@ -280,7 +276,7 @@ getAggresiveProposal ps [p] = let bidAggr = bidPrice p >= minimum (askPrice <$> 
 getAggresiveProposal _  _   = Nothing
 
 preprocessProposals :: [([Proposal], [Proposal])] -> [([Proposal], Maybe Proposal)]
-preprocessProposals = snd . foldr f (mempty, mempty)
+preprocessProposals = snd . foldr f (empty, empty)
    where f :: ([Proposal], [Proposal]) -> (Maybe [Proposal], [([Proposal], Maybe Proposal)]) -> (Maybe [Proposal], [([Proposal], Maybe Proposal)])
          f (pb, ps) ~(ps', acc) | null acc  = (Just ps, [(ps, Nothing)])
                                 | null ps'  = (Just ps, acc)
@@ -289,17 +285,17 @@ preprocessProposals = snd . foldr f (mempty, mempty)
                                               $     getAggresiveProposal pb ps
 
 rebuildEventBook :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay AugmentedEventBook
-rebuildEventBook psVec osVec = let ps = V.toList psVec
-                                   os = V.toList osVec
-                                   emptyBook = (TimeOfDay 0 0 0, (mempty, Nothing, Nothing, mempty, mempty))
-                               in  M.fromDescList . init . scanlMap updateEventBook emptyBook $ buildEventMap ps os
+rebuildEventBook psVec osVec = let ps = filterMTS $ V.toList psVec
+                                   os = filterByBond (bondCode $ head ps) . filterDate (date $ head ps) . filterMTS $ V.toList osVec
+                                   emptyBook = (TimeOfDay 0 0 0, (mempty, empty, empty, empty, empty))
+                               in  M.fromDescList . init . scanlMap updateEventBook emptyBook $ pairWithOrders (toProposalTimeSeries ps) os
 
 rebuildLOB :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay Snapshot
 rebuildLOB ps os = fmap shoot $ rebuildEventBook ps os
 
 rebuildLOBWithLog :: V.Vector Proposal -> V.Vector Order -> IO (M.Map TimeOfDay Snapshot)
 rebuildLOBWithLog ps os = do
-   (lob, log) <- return $ (,) <$> fmap shoot <*> mconcat . fmap (errorLogWith orderMatchingShortErrorLog (const mempty)) . M.elems $ rebuildEventBook ps os
+   (lob, log) <- return $ (,) <$> fmap shoot <*> mconcat . fmap (errorLogWith orderMatchingShortErrorLog (const empty)) . M.elems $ rebuildEventBook ps os
    putStrLn log
    return lob
 
