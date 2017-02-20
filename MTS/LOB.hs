@@ -48,6 +48,9 @@ symEither f = either f f
 constEither :: a -> a -> Either b c -> a
 constEither x y = either (const x) (const y)
 
+constMaybe :: a -> a -> Maybe b -> a
+constMaybe x y = maybe x (const y)
+
 scanlMap :: (a -> b -> a) -> (k, a) -> M.Map k b -> [(k, a)]
 scanlMap f acc0 = M.foldlWithKey (\accs@((_, x):_) k b -> (k, (f x b)):accs) [acc0]
 
@@ -264,6 +267,26 @@ updateEventBook (pb, _, _, _, _) (ps,  Just o) = let eitherTrades = validatedTra
                                                      pb'  = M.union (makeProposalBook ps) pb
                                                      trades = symEither id eitherTrades
                                                  in  (pb', Just o, Nothing, trades, log)
+
+getAggresiveProposal :: [Proposal] -> [Proposal] -> Maybe Proposal
+getAggresiveProposal _  []  = Nothing
+getAggresiveProposal ps [p] = let bidAggr = bidPrice p >= minimum (askPrice <$> ps)
+                                  askAggr = askPrice p <= maximum (bidPrice <$> ps)
+                                  justPIf b = if b then Just p else Nothing
+                              in  case pQuotingSide p
+                                  of   AskOnly   -> justPIf $ askAggr
+                                       BidOnly   -> justPIf $            bidAggr
+                                       BothSides -> justPIf $ askAggr || bidAggr
+getAggresiveProposal _  _   = Nothing
+
+preprocessProposals :: [([Proposal], [Proposal])] -> [([Proposal], Maybe Proposal)]
+preprocessProposals = snd . foldr f (mempty, mempty)
+   where f :: ([Proposal], [Proposal]) -> (Maybe [Proposal], [([Proposal], Maybe Proposal)]) -> (Maybe [Proposal], [([Proposal], Maybe Proposal)])
+         f (pb, ps) ~(ps', acc) | null acc  = (Just ps, [(ps, Nothing)])
+                                | null ps'  = (Just ps, acc)
+                                | otherwise = maybe        (Just ps, (ps, Nothing):acc)
+                                                    (\p -> (Nothing, (ps, Just p ):acc))
+                                              $     getAggresiveProposal pb ps
 
 rebuildEventBook :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay AugmentedEventBook
 rebuildEventBook psVec osVec = let ps = V.toList psVec
