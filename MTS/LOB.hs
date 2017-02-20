@@ -1,3 +1,5 @@
+{-# LANGUAGE TupleSections #-}
+
 module MTS.LOB (shoot, rebuildEventBook, rebuildLOB, rebuildLOBWithLog, rebuildLOBXRay, Price, Quantity, Bid, Ask, LOBSide, AskSide, BidSide, Snapshot) where
 
 import MTS.Types
@@ -43,20 +45,11 @@ choice2 (x, y) (x', y') = (x <|> x', y <|> y')
 fst5 :: (a, b, c, d, e) -> a
 fst5 (x, _, _, _, _) = x
 
-fifth5 :: (a, b, c, d, e) -> e
-fifth5 (_, _, _, _, x) = x
-
 symEither :: (a -> b) -> SymEither a -> b
 symEither f = either f f
 
 constEither :: a -> a -> Either b c -> a
 constEither x y = either (const x) (const y)
-
-constMaybe :: a -> a -> Maybe b -> a
-constMaybe x y = maybe x (const y)
-
-scanlMap :: (a -> b -> a) -> (k, a) -> M.Map k b -> [(k, a)]
-scanlMap f acc0 = M.foldlWithKey (\accs@((_, x):_) k b -> (k, (f x b)):accs) [acc0]
 
 alignEventByID :: MTSEvent a => [a] -> [a] -> [Maybe a]
 alignEventByID stencil aligning = map (\p -> findByID (eventID p) aligning) stencil
@@ -108,8 +101,13 @@ toOrderTimeSeries :: [Order] -> M.Map TimeOfDay Order
 toOrderTimeSeries = M.fromListWith err . fmap stampTime where
    err = error "Found two orders with same time stamp."
 
-pairWithOrders :: Alternative f => M.Map TimeOfDay (f a) -> [Order] -> M.Map TimeOfDay (f a, Maybe Order)
-pairWithOrders xs = M.unionWith choice2 ((\x -> (x, empty)) <$> xs) . fmap ((,) empty . Just) . toOrderTimeSeries
+pairWithOrders :: Alternative f => [Order] -> M.Map TimeOfDay (f a) -> M.Map TimeOfDay (f a, Maybe Order)
+pairWithOrders os xs = M.unionWith choice2 ((, empty) <$> xs) . fmap ((empty,) . Just) $ toOrderTimeSeries os
+
+toDescEventTimeSeries :: [Proposal] -> [Order] -> [(TimeOfDay, Event)]
+toDescEventTimeSeries [] _ = mempty
+toDescEventTimeSeries (p:ps) os = let os' = filterByBond (bondCode p) . filterDate (date p) $ filterMTS os
+                                  in  M.toDescList . pairWithOrders os' . toProposalTimeSeries $ filterMTS ps
 
 filterActiveProposals :: ProposalBook -> [Proposal]
 filterActiveProposals = filterActive . M.elems
@@ -135,8 +133,8 @@ hasDuplicatePrices :: ProposalBook -> Bool
 hasDuplicatePrices pb = let ((bs, as), _) = M.mapAccum (\(bs', as') p -> ((pBidPrice p:bs', pAskPrice p:as'), ())) ([],[]) pb
                         in hasDuplicate bs || hasDuplicate as
 
-makeProposalBook :: [Proposal] -> ProposalBook
-makeProposalBook = sanityCheck . M.fromList . map (\p -> (pProposalID p, p)) where
+toProposalBook :: [Proposal] -> ProposalBook
+toProposalBook = sanityCheck . M.fromList . map ((,) <$> eventID <*> id) where
    sanityCheck :: ProposalBook -> ProposalBook
    sanityCheck pb = if hasDuplicatePrices pb
             then error $ "Invalid duplicate time proposals: " ++ show pb
@@ -256,13 +254,26 @@ errorLogWith orderLog proposalLog eb@(_, _, _, _, err) = mconcat $ logEach <$> e
          logEach OrderMatching = orderLog eb
          logEach ProposalMatching = proposalLog eb
 
-updateEventBook :: AugmentedEventBook -> Event -> AugmentedEventBook
-updateEventBook (pb, _, _, _, _) (ps, Nothing) = (M.union (makeProposalBook ps) pb, empty, empty, empty, empty)
-updateEventBook (pb, _, _, _, _) (ps,  Just o) = let eitherTrades = validatedTrades (M.elems pb) o ps
-                                                     log = constEither [OrderMatching] [] eitherTrades
-                                                     pb'  = M.union (makeProposalBook ps) pb
-                                                     trades = symEither id eitherTrades
-                                                 in  (pb', Just o, Nothing, trades, log)
+tradesFromOrder :: ProposalBook -> [Proposal] -> Order -> (PrioritisedBook, [ParseError])
+tradesFromOrder pb ps o = let eitherTrades = validatedTrades (M.elems pb) o ps
+                          in (symEither id eitherTrades,
+                              constEither [OrderMatching] [] eitherTrades)
+
+incorporateProposals :: ProposalBook -> [Proposal] -> ProposalBook
+incorporateProposals pb ps = M.union (toProposalBook ps) pb
+
+augmentEventBook :: ProposalBook -> (TimeOfDay, Event) -> (TimeOfDay, AugmentedEventBook)
+augmentEventBook pb (t, (ps, o)) = let pb' = incorporateProposals pb ps
+                                   in case o
+                                      of   Nothing ->     (t, (pb', o, empty,  empty, empty))
+                                           Just o' -> let (trades, log) = tradesFromOrder pb ps o'
+                                                      in  (t, (pb', o, empty, trades,   log))
+
+augmentEventTimeSeries :: [(TimeOfDay, Event)] -> [(TimeOfDay, AugmentedEventBook)]
+augmentEventTimeSeries = foldr f empty
+  where f :: (TimeOfDay, Event) -> [(TimeOfDay, AugmentedEventBook)] -> [(TimeOfDay, AugmentedEventBook)]
+        f e aebs | null aebs = [augmentEventBook (incorporateProposals mempty . fst $ snd e) e]
+                 | otherwise = augmentEventBook (fst5 . snd $ head aebs) e:aebs
 
 getAggresiveProposal :: [Proposal] -> [Proposal] -> Maybe Proposal
 getAggresiveProposal _  []  = Nothing
@@ -284,20 +295,17 @@ preprocessProposals = snd . foldr f (empty, empty)
                                                     (\p -> (Nothing, (ps, Just p ):acc))
                                               $     getAggresiveProposal pb ps
 
-rebuildEventBook :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay AugmentedEventBook
-rebuildEventBook psVec osVec = let ps = filterMTS $ V.toList psVec
-                                   os = filterByBond (bondCode $ head ps) . filterDate (date $ head ps) . filterMTS $ V.toList osVec
-                                   emptyBook = (TimeOfDay 0 0 0, (mempty, empty, empty, empty, empty))
-                               in  M.fromDescList . init . scanlMap updateEventBook emptyBook $ pairWithOrders (toProposalTimeSeries ps) os
+rebuildEventBook :: [Proposal] -> [Order] -> [(TimeOfDay, AugmentedEventBook)]
+rebuildEventBook ps = augmentEventTimeSeries . toDescEventTimeSeries ps
 
-rebuildLOB :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay Snapshot
-rebuildLOB ps os = fmap shoot $ rebuildEventBook ps os
+rebuildLOB :: V.Vector Proposal -> V.Vector Order -> [(TimeOfDay, Snapshot)]
+rebuildLOB ps os = fmap (fmap shoot) . rebuildEventBook (V.toList ps) $ V.toList os
 
-rebuildLOBWithLog :: V.Vector Proposal -> V.Vector Order -> IO (M.Map TimeOfDay Snapshot)
+rebuildLOBWithLog :: V.Vector Proposal -> V.Vector Order -> IO [(TimeOfDay, Snapshot)]
 rebuildLOBWithLog ps os = do
-   (lob, log) <- return $ (,) <$> fmap shoot <*> mconcat . fmap (errorLogWith orderMatchingShortErrorLog (const empty)) . M.elems $ rebuildEventBook ps os
+   (lob, log) <- return $ (,) <$> fmap (fmap shoot) <*> mconcat . fmap (errorLogWith orderMatchingShortErrorLog (const empty)) . map snd $ rebuildEventBook (V.toList ps) (V.toList os)
    putStrLn log
    return lob
 
-rebuildLOBXRay :: V.Vector Proposal -> V.Vector Order -> M.Map TimeOfDay Snapshot
-rebuildLOBXRay ps os = fmap shootXRay $ rebuildEventBook ps os
+rebuildLOBXRay :: V.Vector Proposal -> V.Vector Order -> [(TimeOfDay, Snapshot)]
+rebuildLOBXRay ps os = fmap (fmap shootXRay) $ rebuildEventBook (V.toList ps) (V.toList os)

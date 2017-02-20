@@ -92,7 +92,5 @@ snapshotToDepth3LOB (t, (bs, as)) = let [(bp1, bq1), (bp2, bq2), (bp3, bq3)] = e
                                         [(ap1, aq1), (ap2, aq2), (ap3, aq3)] = extractBestNAsk 3 as
                                     in  (t, bp1, bq1, bp2, bq2, bp3, bq3, ap1, aq1, ap2, aq2, ap3, aq3)
 
-encodeDepth3LOB :: M.Map TimeOfDay Snapshot -> B.ByteString
--- encodeDepth3LOB = encodeByName depth3LOBHeader . map snapshotToDepth3LOB . M.toAscList
-encodeDepth3LOB = encodeByName depth3LOBHeader . map snapshotToDepth3LOB . M.toAscList
-
+encodeDepth3LOB :: [(TimeOfDay, Snapshot)] -> B.ByteString
+encodeDepth3LOB = encodeByName depth3LOBHeader . map snapshotToDepth3LOB
