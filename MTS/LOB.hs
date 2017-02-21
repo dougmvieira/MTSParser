@@ -270,10 +270,19 @@ augmentEventBook pb (t, (ps, o)) = let pb' = incorporateProposals pb ps
                                                       in  (t, (pb', o, empty, trades,   log))
 
 augmentEventTimeSeries :: [(TimeOfDay, Event)] -> [(TimeOfDay, AugmentedEventBook)]
-augmentEventTimeSeries = foldr f empty
-  where f :: (TimeOfDay, Event) -> [(TimeOfDay, AugmentedEventBook)] -> [(TimeOfDay, AugmentedEventBook)]
-        f e aebs | null aebs = [augmentEventBook (incorporateProposals mempty . fst $ snd e) e]
-                 | otherwise = augmentEventBook (fst5 . snd $ head aebs) e:aebs
+augmentEventTimeSeries = snd . foldr f (empty, empty)
+  where f :: (TimeOfDay, Event)
+          -> (Maybe Proposal, [(TimeOfDay, AugmentedEventBook)])
+          -> (Maybe Proposal, [(TimeOfDay, AugmentedEventBook)])
+        f e ~(p, aebs) = let pb = fst5 . snd $ head aebs
+                             ps = fst $ snd e
+                         in  if   null aebs
+                             then (empty, [augmentEventBook (incorporateProposals mempty ps) e])
+                             else case p
+                                  of Just p' -> (empty, (time p', (incorporateProposals pb ps, empty, Just p', empty, empty)):aebs)
+                                     Nothing -> case getAggresiveProposal (M.elems pb) ps
+                                                of   Just pAggr -> (Just pAggr, aebs)
+                                                     Nothing    -> (empty, augmentEventBook pb e:aebs)
 
 getAggresiveProposal :: [Proposal] -> [Proposal] -> Maybe Proposal
 getAggresiveProposal _  []  = Nothing
@@ -285,15 +294,6 @@ getAggresiveProposal ps [p] = let bidAggr = bidPrice p >= minimum (askPrice <$> 
                                        BidOnly   -> justPIf $            bidAggr
                                        BothSides -> justPIf $ askAggr || bidAggr
 getAggresiveProposal _  _   = Nothing
-
-preprocessProposals :: [([Proposal], [Proposal])] -> [([Proposal], Maybe Proposal)]
-preprocessProposals = snd . foldr f (empty, empty)
-   where f :: ([Proposal], [Proposal]) -> (Maybe [Proposal], [([Proposal], Maybe Proposal)]) -> (Maybe [Proposal], [([Proposal], Maybe Proposal)])
-         f (pb, ps) ~(ps', acc) | null acc  = (Just ps, [(ps, Nothing)])
-                                | null ps'  = (Just ps, acc)
-                                | otherwise = maybe        (Just ps, (ps, Nothing):acc)
-                                                    (\p -> (Nothing, (ps, Just p ):acc))
-                                              $     getAggresiveProposal pb ps
 
 rebuildEventBook :: [Proposal] -> [Order] -> [(TimeOfDay, AugmentedEventBook)]
 rebuildEventBook ps = augmentEventTimeSeries . toDescEventTimeSeries ps
