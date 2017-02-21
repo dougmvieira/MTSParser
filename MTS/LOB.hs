@@ -32,7 +32,7 @@ type Snapshot = (BidSide, AskSide)
 
 type Event = ([Proposal], Maybe Order)
 type EventBook = (ProposalBook, Maybe Order)
-type AugmentedEventBook = (ProposalBook, Maybe Order, Maybe Proposal, PrioritisedBook, [ParseError])
+type AugmentedEventBook = (ProposalBook, Maybe Order, Maybe (Proposal, Verb), PrioritisedBook, [ParseError])
 
 type BondCode = Text
 
@@ -272,27 +272,27 @@ augmentEventBook pb (t, (ps, o)) = let pb' = incorporateProposals pb ps
 augmentEventTimeSeries :: [(TimeOfDay, Event)] -> [(TimeOfDay, AugmentedEventBook)]
 augmentEventTimeSeries = snd . foldr f (empty, empty)
   where f :: (TimeOfDay, Event)
-          -> (Maybe Proposal, [(TimeOfDay, AugmentedEventBook)])
-          -> (Maybe Proposal, [(TimeOfDay, AugmentedEventBook)])
+          -> (Maybe (Proposal, Verb), [(TimeOfDay, AugmentedEventBook)])
+          -> (Maybe (Proposal, Verb), [(TimeOfDay, AugmentedEventBook)])
         f e ~(p, aebs) = let pb = fst5 . snd $ head aebs
                              ps = fst $ snd e
                          in  if   null aebs
                              then (empty, [augmentEventBook (incorporateProposals mempty ps) e])
                              else case p
-                                  of Just p' -> (empty, (time p', (incorporateProposals pb ps, empty, Just p', empty, empty)):aebs)
+                                  of Just p' -> (empty, (time $ fst p', (incorporateProposals pb ps, empty, Just p', empty, empty)):aebs)
                                      Nothing -> case getAggresiveProposal (M.elems pb) ps
-                                                of   Just pAggr -> (Just pAggr, aebs)
-                                                     Nothing    -> (empty, augmentEventBook pb e:aebs)
+                                                of   Just p' -> (Just p', aebs)
+                                                     Nothing -> (empty  , augmentEventBook pb e:aebs)
 
-getAggresiveProposal :: [Proposal] -> [Proposal] -> Maybe Proposal
+getAggresiveProposal :: [Proposal] -> [Proposal] -> Maybe (Proposal, Verb)
 getAggresiveProposal _  []  = Nothing
 getAggresiveProposal ps [p] = let bidAggr = bidPrice p >= minimum (askPrice <$> ps)
                                   askAggr = askPrice p <= maximum (bidPrice <$> ps)
                                   justPIf b = if b then Just p else Nothing
                               in  case pQuotingSide p
-                                  of   AskOnly   -> justPIf $ askAggr
-                                       BidOnly   -> justPIf $            bidAggr
-                                       BothSides -> justPIf $ askAggr || bidAggr
+                                  of   AskOnly   -> (, Buy) <$> justPIf askAggr
+                                       BidOnly   ->                                 (, Sell) <$> justPIf bidAggr
+                                       BothSides -> (, Buy) <$> justPIf askAggr <|> (, Sell) <$> justPIf bidAggr
 getAggresiveProposal _  _   = Nothing
 
 rebuildEventBook :: [Proposal] -> [Order] -> [(TimeOfDay, AugmentedEventBook)]
