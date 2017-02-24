@@ -57,17 +57,21 @@ testFill = do
 testRebuildLOB = do
   psText <- proposalExamples
   osText <- orderExamples
+  fsText <- fillExamples
   (Right ps) <- return . parseProposal $ psText
   (Right os) <- return . parseOrder $ osText
-  lob <- rebuildLOBWithLog ps os
+  (Right fs) <- return . parseFill $ fsText
+  lob <- rebuildLOBWithLog ps os fs
   B.writeFile "data.txt" $ encodeDepth3LOB lob
 
 testRebuildLOBWithTrades = do
   psText <- proposalExamples'
   osText <- orderExamples
+  fsText <- fillExamples
   (Right ps) <- return . parseProposal $ psText
   (Right os) <- return . parseOrder $ osText
-  lob <- rebuildLOBWithLog ps os
+  (Right fs) <- return . parseFill $ fsText
+  lob <- rebuildLOBWithLog ps os fs
   B.writeFile "dataWithTrades.txt" $ encodeDepth3LOB lob
 
 testRebuildOn :: V.Vector Order -> String -> IO ()
