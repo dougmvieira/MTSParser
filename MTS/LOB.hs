@@ -16,6 +16,7 @@ import GHC.Exts (sortWith)
 import qualified Data.Vector as V
 import qualified Data.Map as M
 
+
 data ParseError = OrderMatching | ProposalMatching deriving (Read, Show)
 
 type Bid = (Price, Quantity)
@@ -81,16 +82,19 @@ filterActive ps = let t = maximum $ map time ps
                   in filter ((&&) <$> isNotExpired t <*> isActive) ps
 
 filterMTS :: MTSEvent a => [a] -> [a]
-filterMTS = filter ((==mtsCode) . marketCode)
+filterMTS = filter $ (==mtsCode) . marketCode
 
 filterDate :: MTSEvent a => Day -> [a] -> [a]
 filterDate d = filter $ (==d) . date
 
 findByID :: MTSEvent a => ID -> [a] -> Maybe a
-findByID i = find ((== i) . eventID)
+findByID i = find $ (== i) . eventID
 
-filterByBond :: MTSEvent a => Text -> [a] -> [a]
-filterByBond b = filter $ (==b) . bondCode
+filterID :: MTSEvent a => ID -> [a] -> [a]
+filterID i = filter $ (== i) . eventID
+
+filterBond :: MTSEvent a => Text -> [a] -> [a]
+filterBond b = filter $ (== b) . bondCode
 
 stampTime :: MTSEvent a => a -> (TimeOfDay, a)
 stampTime = (,) <$> time <*> id
@@ -107,7 +111,7 @@ pairWithOrders os xs = M.unionWith choice2 ((, empty) <$> xs) . fmap ((empty,) .
 
 toDescEventTimeSeries :: [Proposal] -> [Order] -> [(TimeOfDay, Event)]
 toDescEventTimeSeries [] _ = mempty
-toDescEventTimeSeries (p:ps) os = let os' = filterByBond (bondCode p) . filterDate (date p) $ filterMTS os
+toDescEventTimeSeries (p:ps) os = let os' = filterBond (bondCode p) . filterDate (date p) $ filterMTS os
                                   in  M.toDescList . pairWithOrders os' . toProposalTimeSeries $ filterMTS ps
 
 filterActiveProposals :: ProposalBook -> [Proposal]
@@ -172,6 +176,10 @@ allOrNone :: Price -> Quantity -> PrioritisedBook -> PrioritisedBook
 allOrNone p q lob = let (qRem, _, trades) = walkTheLOB p (q, lob, empty)
                     in if qRem == 0 then reverse trades else empty
 
+proposalAggr :: Price -> Quantity -> PrioritisedBook -> PrioritisedBook
+proposalAggr p q lob = let (qRem, _, trades) = walkTheLOB p (q, lob, empty)
+                    in if qRem == 0 then reverse trades else undefined -- TODO
+
 executeOrderWith :: OrderType -> Price -> Quantity -> PrioritisedBook -> PrioritisedBook
 executeOrderWith FillAndKill = fillAndKill
 executeOrderWith AllOrNone   = allOrNone
@@ -179,15 +187,22 @@ executeOrderWith AllOrNone   = allOrNone
 executeOrder :: Order -> PrioritisedBook -> PrioritisedBook
 executeOrder = executeOrderWith <$> oOrderType <*> signedPrice <*> qty
 
+executeProposal :: AggrProposal -> PrioritisedBook -> PrioritisedBook
+executeProposal = proposalAggr <$> signedPrice <*> qty
+
+execute :: Either AggrProposal Order -> PrioritisedBook -> PrioritisedBook
+execute (Left p) = executeProposal p
+execute (Right o) = executeOrder o
+--------------------------------------------------------------------------------------------
+
 executedProposals :: PrioritisedBook -> PrioritisedBook -> PrioritisedBook
 executedProposals trades pb = zipWith diffSnd pb trades
    where diffSnd :: Num b => (a, b) -> (a, b) -> (a, b)
          diffSnd (i, x) (_, y) = (i, x - y)
 
 isProposalAtSignedPrice :: Price -> Proposal -> Bool
-isProposalAtSignedPrice p
-   | p < 0 = (== p) . signedBidPrice
-   | p > 0 = (== p) .       askPrice
+isProposalAtSignedPrice p | p < 0 = (== p) . signedBidPrice
+                          | p > 0 = (== p) .       askPrice
 
 isAtTime :: MTSEvent a => TimeOfDay -> a -> Bool
 isAtTime t = (== t) . time
@@ -203,10 +218,9 @@ fromPrioritisedBook ps = map (\p -> uncurry fetchByPriceTime (fst p) ps)
 
 implyVerb :: PrioritisedBook -> Verb
 implyVerb [] = error "Cannot imply verb from empty prioritised book."
-implyVerb ((_, q):_)
-   | q < 0 = Sell
-   | q > 0 = Buy
-implyVerb pb = error . show $ pb
+implyVerb ((_, q):_) | q < 0 = Sell
+                     | q > 0 = Buy
+implyVerb pb = error $ show pb
 
 validateNewOrder :: Verb -> Proposal -> Quantity -> Proposal -> Bool
 validateNewOrder Buy  p 0 p' = bidQty p' == bidQty p && not (isActive p') && bidPrice p' == bidPrice p -- Strangely, the askQty can change in this case
@@ -223,14 +237,14 @@ validateExecution v ps pb ps' = let psAligned = fromPrioritisedBook ps pb
    where uncurry3 :: (a -> b -> c -> r) -> ((a, b, c) -> r)
          uncurry3 f (x, y, z) = f x y z
 
-validatedTrades :: [Proposal] -> Order -> [Proposal] -> SymEither PrioritisedBook
-validatedTrades ps o ps' = let pb = toPrioritisedBook (oVerb o) ps
-                               trades = executeOrder o pb
-                           in if   validateExecution (oVerb o) ps (executedProposals trades pb) ps'
+validatedTrades :: [Proposal] -> Either AggrProposal Order -> [Proposal] -> SymEither PrioritisedBook
+validatedTrades ps o ps' = let pb = toPrioritisedBook (either verb verb o) ps
+                               trades = execute o pb
+                           in if   validateExecution (either verb verb o) ps (executedProposals trades pb) ps'
                               then Right trades
                               else Left trades
 
-validatedTradesFallback :: [Proposal] -> Order -> [Proposal] -> PrioritisedBook
+validatedTradesFallback :: [Proposal] -> Either AggrProposal Order -> [Proposal] -> PrioritisedBook
 validatedTradesFallback ps o ps' = let err = error "Fallback mechanism failed."
                                        psAligned = catMaybes $ alignEventByID ps' ps
                                    in  either err id $ validatedTrades psAligned o ps'
@@ -260,7 +274,7 @@ errorLogWith orderLog proposalLog eb@(_, _, _, _, err) = mconcat $ logEach <$> e
          logEach OrderMatching = orderLog eb
          logEach ProposalMatching = proposalLog eb
 
-tradesFromOrder :: ProposalBook -> [Proposal] -> Order -> (PrioritisedBook, [ParseError])
+tradesFromOrder :: ProposalBook -> [Proposal] -> Either AggrProposal Order -> (PrioritisedBook, [ParseError])
 tradesFromOrder pb ps o = let pb' = M.elems pb
                               eitherTrades = validatedTrades pb' o ps
                           in (either (const $ validatedTradesFallback pb' o ps) id eitherTrades,
@@ -273,7 +287,7 @@ augmentEventBook :: ProposalBook -> (TimeOfDay, Event) -> (TimeOfDay, AugmentedE
 augmentEventBook pb (t, (ps, o)) = let pb' = incorporateProposals pb ps
                                    in case o
                                       of   Nothing ->     (t, (pb', o, empty,  empty, empty))
-                                           Just o' -> let (trades, log) = tradesFromOrder pb ps o'
+                                           Just o' -> let (trades, log) = tradesFromOrder pb ps (Right o')
                                                       in  (t, (pb', o, empty, trades,   log))
 
 augmentEventTimeSeries :: [(TimeOfDay, Event)] -> [(TimeOfDay, AugmentedEventBook)]
@@ -305,8 +319,8 @@ getAggresiveProposal _  _   = Nothing
 rebuildEventBook :: [Proposal] -> [Order] -> [(TimeOfDay, AugmentedEventBook)]
 rebuildEventBook ps = augmentEventTimeSeries . toDescEventTimeSeries ps
 
-fillToQtiesAndPrices :: Order -> [Fill] -> [(Quantity, Price)]
-fillToQtiesAndPrices o = fmap ((,) <$> qty <*> price) . sortWith time . filter (\f -> eventID o == eventID f && date o == date f && bondCode o == bondCode f)
+fillToQtiesAndPrices :: MTSEvent a => a -> [Fill] -> [(Quantity, Price)]
+fillToQtiesAndPrices e = fmap ((,) <$> qty <*> price) . sortWith time . filterDate (date e) . filterBond (bondCode e) . filterID (eventID e)
 
 tradesToQtiesAndPrices :: PrioritisedBook -> [(Quantity, Price)]
 tradesToQtiesAndPrices = fmap (\((p, _), q) -> (q, abs p))
@@ -315,13 +329,17 @@ verifyTradesWithFills :: [Fill] -> Maybe Order -> PrioritisedBook -> Bool
 verifyTradesWithFills fs Nothing pb = False
 verifyTradesWithFills fs (Just o) pb = fillToQtiesAndPrices o fs == tradesToQtiesAndPrices pb
 
+fillsVerificationLog :: Bool -> Maybe String
+fillsVerificationLog True  = Nothing
+fillsVerificationLog False = Just "[Warning] Order matches NOT consistent with Fills file"
+
 rebuildLOB :: V.Vector Proposal -> V.Vector Order -> [(TimeOfDay, Snapshot)]
 rebuildLOB ps os = fmap (fmap shoot) . rebuildEventBook (V.toList ps) $ V.toList os
 
 rebuildLOBWithLog :: V.Vector Proposal -> V.Vector Order -> V.Vector Fill -> IO [(TimeOfDay, Snapshot)]
 rebuildLOBWithLog ps os fs = do
    (lob, log, trades) <- return $ (,,) <$> fmap (fmap shoot) <*> mconcat . fmap (errorLogWith orderMatchingShortErrorLog (const empty)) . map snd <*> filter (not . null . snd) . fmap ((\(_, o, _, t, _) -> (o, t)) . snd) $ rebuildEventBook (V.toList ps) (V.toList os)
-   if all (uncurry (verifyTradesWithFills $ V.toList fs)) trades then return () else putStrLn "[Warning] Order matches NOT consistent with Fills file"
+   mapM_ putStrLn . fillsVerificationLog $ all (uncurry (verifyTradesWithFills $ V.toList fs)) trades
    putStrLn log
    return lob
 

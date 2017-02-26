@@ -18,6 +18,7 @@ module MTS.Types (MTSEvent(..),
                   MTSYield(..),
 
                   Proposal(..),
+                  AggrProposal(..),
                   Fill(..),
                   Order(..),
 
@@ -91,14 +92,13 @@ data Proposal = Proposal { pMarketCode  :: Text
                          , pProposalID  :: Int
                          , pQuotingSide :: MTSSide } deriving (Show, Generic)
 
+newtype AggrProposal = AggrProposal { getProposal :: (Proposal, Verb) }
+
 expiry :: Proposal -> TimeOfDay
 expiry = addPico <$> getMTSTime . pEndTime <*> getMTSPico . pEndTimeMsec
 
 bidPrice :: Proposal -> Price
 bidPrice = pBidPrice
-
-signedBidPrice :: Proposal -> Price
-signedBidPrice = negate . pBidPrice
 
 askPrice :: Proposal -> Price
 askPrice = pAskPrice
@@ -109,6 +109,9 @@ bidQty = qtyFromLots . pBidQty
 askQty :: Proposal -> Quantity
 askQty = qtyFromLots . pAskQty
 
+signedBidPrice :: Proposal -> Price
+signedBidPrice = negate . pBidPrice
+
 instance MTSEvent Proposal where
    date = getMTSDay . pRefDate
    time = addPico <$> getMTSTime . pUpdTime <*> getMTSPico . pUpdTimeMsec
@@ -117,16 +120,14 @@ instance MTSEvent Proposal where
    bondType = pBondType
    eventID = pProposalID
 
-instance MTSOneSidedEvent Proposal where
-   qty p = case pQuotingSide p of BothSides -> error "Proposal is not one sided."
-                                  AskOnly -> askQty p
-                                  BidOnly -> bidQty p
-   price p = case pQuotingSide p of BothSides -> error "Proposal is not one sided."
-                                    AskOnly -> askPrice p
-                                    BidOnly -> bidPrice p
-   verb p = case pQuotingSide p of BothSides -> error "Proposal is not one sided."
-                                   AskOnly -> Sell
-                                   BidOnly -> Buy
+instance MTSOneSidedEvent AggrProposal where
+   qty ap = let (p, v) = getProposal ap
+            in  case v of Buy  -> bidQty p
+                          Sell -> askQty p
+   price ap = let (p, v) = getProposal ap
+              in  case v of Buy  -> bidPrice p
+                            Sell -> askPrice p
+   verb = snd . getProposal
 
 data Fill = Fill { fRefDate         :: MTSDay
                  , fMarketCode      :: Text
