@@ -92,7 +92,7 @@ data Proposal = Proposal { pMarketCode  :: Text
                          , pProposalID  :: Int
                          , pQuotingSide :: MTSSide } deriving (Show, Generic)
 
-newtype AggrProposal = AggrProposal { getProposal :: (Proposal, Verb) }
+newtype AggrProposal = AggrProposal { getProposal :: (Proposal, Verb) } deriving Show
 
 expiry :: Proposal -> TimeOfDay
 expiry = addPico <$> getMTSTime . pEndTime <*> getMTSPico . pEndTimeMsec
@@ -119,6 +119,14 @@ instance MTSEvent Proposal where
    bondCode = pBondCode
    bondType = pBondType
    eventID = pProposalID
+
+instance MTSEvent AggrProposal where
+   date = date . fst . getProposal
+   time = time . fst . getProposal
+   marketCode = marketCode . fst . getProposal
+   bondCode = bondCode . fst . getProposal
+   bondType = bondType . fst . getProposal
+   eventID = eventID . fst . getProposal
 
 instance MTSOneSidedEvent AggrProposal where
    qty ap = let (p, v) = getProposal ap

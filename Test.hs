@@ -61,7 +61,9 @@ testRebuildLOB = do
   (Right ps) <- return . parseProposal $ psText
   (Right os) <- return . parseOrder $ osText
   (Right fs) <- return . parseFill $ fsText
-  lob <- rebuildLOBWithLog ps os fs
+  (lob, log, log') <- return $ rebuildLOBWithLog ps os fs
+  putStrLn log
+  putStrLn log'
   B.writeFile "data.txt" $ encodeDepth3LOB lob
 
 testRebuildLOBWithTrades = do
@@ -71,7 +73,9 @@ testRebuildLOBWithTrades = do
   (Right ps) <- return . parseProposal $ psText
   (Right os) <- return . parseOrder $ osText
   (Right fs) <- return . parseFill $ fsText
-  lob <- rebuildLOBWithLog ps os fs
+  (lob, log, log') <- return $ rebuildLOBWithLog ps os fs
+  putStrLn log
+  putStrLn log'
   B.writeFile "dataWithTrades.txt" $ encodeDepth3LOB lob
 
 testRebuildOn :: V.Vector Order -> String -> IO ()

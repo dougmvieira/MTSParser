@@ -17,7 +17,7 @@ import qualified Data.Vector as V
 import qualified Data.Map as M
 
 
-data ParseError = OrderMatching | ProposalMatching deriving (Read, Show)
+data ParseError = OrderMatching | ProposalMatching | FillVerification deriving (Read, Show)
 
 type Bid = (Price, Quantity)
 type Ask = (Price, Quantity)
@@ -34,7 +34,7 @@ type Snapshot = (BidSide, AskSide)
 
 type Event = ([Proposal], Maybe Order)
 type EventBook = (ProposalBook, Maybe Order)
-type AugmentedEventBook = (ProposalBook, Maybe Order, Maybe (Proposal, Verb), PrioritisedBook, [ParseError])
+type AugmentedEventBook = (ProposalBook, Maybe Order, Maybe AggrProposal, PrioritisedBook, [ParseError])
 
 type BondCode = Text
 
@@ -178,7 +178,7 @@ allOrNone p q lob = let (qRem, _, trades) = walkTheLOB p (q, lob, empty)
 
 proposalAggr :: Price -> Quantity -> PrioritisedBook -> PrioritisedBook
 proposalAggr p q lob = let (qRem, _, trades) = walkTheLOB p (q, lob, empty)
-                    in if qRem == 0 then reverse trades else undefined -- TODO
+                       in if qRem == 0 then reverse trades else undefined -- TODO
 
 executeOrderWith :: OrderType -> Price -> Quantity -> PrioritisedBook -> PrioritisedBook
 executeOrderWith FillAndKill = fillAndKill
@@ -193,7 +193,6 @@ executeProposal = proposalAggr <$> signedPrice <*> qty
 execute :: Either AggrProposal Order -> PrioritisedBook -> PrioritisedBook
 execute (Left p) = executeProposal p
 execute (Right o) = executeOrder o
---------------------------------------------------------------------------------------------
 
 executedProposals :: PrioritisedBook -> PrioritisedBook -> PrioritisedBook
 executedProposals trades pb = zipWith diffSnd pb trades
@@ -225,8 +224,8 @@ implyVerb pb = error $ show pb
 validateNewOrder :: Verb -> Proposal -> Quantity -> Proposal -> Bool
 validateNewOrder Buy  p 0 p' = bidQty p' == bidQty p && not (isActive p') && bidPrice p' == bidPrice p -- Strangely, the askQty can change in this case
 validateNewOrder Sell p 0 p' = askQty p' == askQty p && not (isActive p') && askPrice p' == askPrice p -- Strangely, the bidQty can also change in this case
-validateNewOrder Buy  p q p' = askQty p' ==        q && bidQty p' == bidQty p &&      isActive p'  && bidPrice p' == bidPrice p
-validateNewOrder Sell p q p' = askQty p' == askQty p && bidQty p' ==        q &&      isActive p'  && askPrice p' == askPrice p
+validateNewOrder Buy  p q p' = validateNewOrder Buy  p 0 p' || (askQty p' ==        q && bidQty p' == bidQty p &&      isActive p'  && bidPrice p' == bidPrice p)
+validateNewOrder Sell p q p' = validateNewOrder Sell p 0 p' || (askQty p' == askQty p && bidQty p' ==        q &&      isActive p'  && askPrice p' == askPrice p)
 
 validateExecution :: Verb -> [Proposal] -> PrioritisedBook -> [Proposal] -> Bool
 validateExecution v ps pb ps' = let psAligned = fromPrioritisedBook ps pb
@@ -240,7 +239,9 @@ validateExecution v ps pb ps' = let psAligned = fromPrioritisedBook ps pb
 validatedTrades :: [Proposal] -> Either AggrProposal Order -> [Proposal] -> SymEither PrioritisedBook
 validatedTrades ps o ps' = let pb = toPrioritisedBook (either verb verb o) ps
                                trades = execute o pb
-                           in if   validateExecution (either verb verb o) ps (executedProposals trades pb) ps'
+                               psToValidate = case o of Left p  -> filter ((/= eventID p) . eventID) ps'
+                                                        Right _ -> ps'
+                           in if   validateExecution (either verb verb o) ps (executedProposals trades pb) psToValidate
                               then Right trades
                               else Left trades
 
@@ -259,11 +260,19 @@ orderMatchingLongErrorLog ps ps' o trades = let psAligned = fromPrioritisedBook 
                                                 ++ "\n\n"
 
 orderMatchingShortErrorLog :: AugmentedEventBook -> String
-orderMatchingShortErrorLog (_,  Just o, _, _, _) = unwords [unpack $ bondCode o,
-                                                            show $ date o,
-                                                            show $ time o]
-                                                   ++ ". Order matching error.\n"
-orderMatchingShortErrorLog _ = "WHAT!? Order matching error without an order!?.\n"
+orderMatchingShortErrorLog (_, Just o, _, _, _) = unwords [unpack $ bondCode o,
+                                                           show $ date o,
+                                                           show $ time o]
+                                                  ++ ". Order matching error."
+orderMatchingShortErrorLog _ = "WHAT!? Order matching error without an order!?."
+
+proposalMatchingShortErrorLog :: AugmentedEventBook -> String
+proposalMatchingShortErrorLog (_, _, Just p, _, _) = unwords [unpack $ bondCode p,
+                                                              show $ date p,
+                                                              show $ time p]
+                                                     ++ ". Proposal matching error."
+proposalMatchingShortErrorLog _ = "WHAT!? Proposal matching error without a proposal!?."
+
 
 errorLogWith :: (AugmentedEventBook -> String)
              -> (AugmentedEventBook -> String)
@@ -274,11 +283,14 @@ errorLogWith orderLog proposalLog eb@(_, _, _, _, err) = mconcat $ logEach <$> e
          logEach OrderMatching = orderLog eb
          logEach ProposalMatching = proposalLog eb
 
+shortErrorLog :: AugmentedEventBook -> String
+shortErrorLog = errorLogWith orderMatchingShortErrorLog proposalMatchingShortErrorLog
+
 tradesFromOrder :: ProposalBook -> [Proposal] -> Either AggrProposal Order -> (PrioritisedBook, [ParseError])
 tradesFromOrder pb ps o = let pb' = M.elems pb
                               eitherTrades = validatedTrades pb' o ps
                           in (either (const $ validatedTradesFallback pb' o ps) id eitherTrades,
-                              constEither [OrderMatching] [] eitherTrades)
+                              constEither [constEither ProposalMatching OrderMatching o] [] eitherTrades)
 
 incorporateProposals :: ProposalBook -> [Proposal] -> ProposalBook
 incorporateProposals pb ps = M.union (toProposalBook ps) pb
@@ -290,58 +302,77 @@ augmentEventBook pb (t, (ps, o)) = let pb' = incorporateProposals pb ps
                                            Just o' -> let (trades, log) = tradesFromOrder pb ps (Right o')
                                                       in  (t, (pb', o, empty, trades,   log))
 
+augmentEventBookWithAggrProposal :: ProposalBook -> AggrProposal -> (TimeOfDay, Event) -> (TimeOfDay, AugmentedEventBook)
+augmentEventBookWithAggrProposal pb p (t, (ps, _)) = let pb' = incorporateProposals pb ps
+                                                         (trades, log) = tradesFromOrder pb ps (Left p)
+                                                     in  (time p, (pb', empty, Just p, trades, log))
+
 augmentEventTimeSeries :: [(TimeOfDay, Event)] -> [(TimeOfDay, AugmentedEventBook)]
 augmentEventTimeSeries = snd . foldr f (empty, empty)
   where f :: (TimeOfDay, Event)
-          -> (Maybe (Proposal, Verb), [(TimeOfDay, AugmentedEventBook)])
-          -> (Maybe (Proposal, Verb), [(TimeOfDay, AugmentedEventBook)])
+          -> (Maybe AggrProposal, [(TimeOfDay, AugmentedEventBook)])
+          -> (Maybe AggrProposal, [(TimeOfDay, AugmentedEventBook)])
         f e ~(p, aebs) = let pb = fst5 . snd $ head aebs
                              ps = fst $ snd e
                          in  if   null aebs
                              then (empty, [augmentEventBook (toProposalBook ps) e])
                              else case p
-                                  of Just p' -> (empty, (time $ fst p', (incorporateProposals pb ps, empty, Just p', empty, empty)):aebs)
+                                  of Just p' -> (empty, augmentEventBookWithAggrProposal pb p' e:aebs)
                                      Nothing -> case getAggresiveProposal (M.elems pb) ps
                                                 of   Just p' -> (Just p', aebs)
                                                      Nothing -> (empty  , augmentEventBook pb e:aebs)
 
-getAggresiveProposal :: [Proposal] -> [Proposal] -> Maybe (Proposal, Verb)
+getAggresiveProposal :: [Proposal] -> [Proposal] -> Maybe AggrProposal
 getAggresiveProposal _  []  = Nothing
-getAggresiveProposal ps [p] = let bidAggr = bidPrice p >= minimum (askPrice <$> ps)
-                                  askAggr = askPrice p <= maximum (bidPrice <$> ps)
-                                  justPIf b = if b then Just p else Nothing
+getAggresiveProposal ps [p] = let ps' = filter isActive ps
+                                  bidAggr = (&&) <$> not . null <*> (bidPrice p >=) . minimum $ askPrice <$> ps'
+                                  askAggr = (&&) <$> not . null <*> (askPrice p <=) . maximum $ bidPrice <$> ps'
+                                  justPIf b v = if b then Just $ AggrProposal (p, v) else Nothing
                               in  case pQuotingSide p
-                                  of   AskOnly   -> (, Buy) <$> justPIf askAggr
-                                       BidOnly   ->                                 (, Sell) <$> justPIf bidAggr
-                                       BothSides -> (, Buy) <$> justPIf askAggr <|> (, Sell) <$> justPIf bidAggr
+                                  of   BidOnly   -> justPIf bidAggr Buy
+                                       AskOnly   ->                         justPIf askAggr Sell
+                                       BothSides -> justPIf bidAggr Buy <|> justPIf askAggr Sell
 getAggresiveProposal _  _   = Nothing
 
 rebuildEventBook :: [Proposal] -> [Order] -> [(TimeOfDay, AugmentedEventBook)]
 rebuildEventBook ps = augmentEventTimeSeries . toDescEventTimeSeries ps
 
-fillToQtiesAndPrices :: MTSEvent a => a -> [Fill] -> [(Quantity, Price)]
-fillToQtiesAndPrices e = fmap ((,) <$> qty <*> price) . sortWith time . filterDate (date e) . filterBond (bondCode e) . filterID (eventID e)
+filterFillsByBondAndDate :: Text -> Day -> [Fill] -> [Fill]
+filterFillsByBondAndDate b d = filterDate d . filterBond b . filterMTS
 
-tradesToQtiesAndPrices :: PrioritisedBook -> [(Quantity, Price)]
-tradesToQtiesAndPrices = fmap (\((p, _), q) -> (q, abs p))
+fillToQtiesAndPrices :: [Fill] -> [(ID, (Quantity, Price))]
+fillToQtiesAndPrices = fmap ((,) <$> eventID <*> ((,) <$> qty <*> price)) . sortWith time
 
-verifyTradesWithFills :: [Fill] -> Maybe Order -> PrioritisedBook -> Bool
-verifyTradesWithFills fs Nothing pb = False
-verifyTradesWithFills fs (Just o) pb = fillToQtiesAndPrices o fs == tradesToQtiesAndPrices pb
+tradesToQtiesAndPrices :: Either AggrProposal Order -> PrioritisedBook -> [(ID, (Quantity, Price))]
+tradesToQtiesAndPrices o = fmap (\((p, _), q) -> (either eventID eventID o, (q, abs p)))
 
-fillsVerificationLog :: Bool -> Maybe String
-fillsVerificationLog True  = Nothing
-fillsVerificationLog False = Just "[Warning] Order matches NOT consistent with Fills file"
+verifyTradesWithFills :: [Fill] -> [(Either AggrProposal Order, PrioritisedBook)] -> Maybe ParseError
+verifyTradesWithFills fs [] = Nothing
+verifyTradesWithFills fs trades@((o, _):_) = let b = either bondCode bondCode o
+                                                 d = either date date o
+                                                 fs' = filterFillsByBondAndDate b d fs
+                                             in if fillToQtiesAndPrices fs' == mconcat (uncurry tradesToQtiesAndPrices <$> reverse trades)
+                                                then Nothing else Just FillVerification
+
+fillsVerificationLog :: String
+fillsVerificationLog = "Order matches NOT consistent with Fills file"
 
 rebuildLOB :: V.Vector Proposal -> V.Vector Order -> [(TimeOfDay, Snapshot)]
 rebuildLOB ps os = fmap (fmap shoot) . rebuildEventBook (V.toList ps) $ V.toList os
 
-rebuildLOBWithLog :: V.Vector Proposal -> V.Vector Order -> V.Vector Fill -> IO [(TimeOfDay, Snapshot)]
-rebuildLOBWithLog ps os fs = do
-   (lob, log, trades) <- return $ (,,) <$> fmap (fmap shoot) <*> mconcat . fmap (errorLogWith orderMatchingShortErrorLog (const empty)) . map snd <*> filter (not . null . snd) . fmap ((\(_, o, _, t, _) -> (o, t)) . snd) $ rebuildEventBook (V.toList ps) (V.toList os)
-   mapM_ putStrLn . fillsVerificationLog $ all (uncurry (verifyTradesWithFills $ V.toList fs)) trades
-   putStrLn log
-   return lob
+toEitherAggression :: Maybe AggrProposal -> Maybe Order -> Maybe (Either AggrProposal Order)
+toEitherAggression  Nothing  Nothing = Nothing
+toEitherAggression (Just p)  Nothing = Just (Left p)
+toEitherAggression  Nothing (Just o) = Just (Right o)
+toEitherAggression _ _ = error "Found order and aggressive proposal at the same time."
+
+rebuildLOBWithLog :: V.Vector Proposal -> V.Vector Order -> V.Vector Fill -> ([(TimeOfDay, Snapshot)], String, String)
+rebuildLOBWithLog ps os fs = let eb = rebuildEventBook (V.toList ps) (V.toList os)
+                                 lob = fmap shoot <$> eb
+                                 log = unlines . filter (not . null) $ shortErrorLog . snd <$> eb
+                                 trades = catMaybes $ (\(x, y) -> maybe Nothing (Just . (, y)) x) . (\(_, o, p, t, _) -> (toEitherAggression p o, t)) . snd <$> eb
+                                 log' = maybe empty (const fillsVerificationLog) $ verifyTradesWithFills (V.toList fs) trades
+                             in  (lob, log, log')
 
 rebuildLOBXRay :: V.Vector Proposal -> V.Vector Order -> [(TimeOfDay, Snapshot)]
 rebuildLOBXRay ps os = fmap (fmap shootXRay) $ rebuildEventBook (V.toList ps) (V.toList os)
