@@ -1,6 +1,6 @@
 {-# LANGUAGE TupleSections #-}
 
-module MTS.LOB (shoot, rebuildEventBook, rebuildLOB, rebuildLOBWithLog, rebuildLOBXRay, Price, Quantity, Bid, Ask, LOBSide, AskSide, BidSide, Snapshot) where
+module MTS.LOB (shoot, rebuildEventBook, rebuildLOB, rebuildLOBWithLog, rebuildRichLOB, rebuildLOBXRay, rebuildEventTypes, Price, Quantity, Bid, Ask, LOBSide, AskSide, BidSide, Snapshot, PrioritisedBook, EventType) where
 
 import MTS.Types
 import MTS.Decode
@@ -31,6 +31,8 @@ type LOBSide = M.Map Price Quantity
 type AskSide = LOBSide
 type BidSide = LOBSide
 type Snapshot = (BidSide, AskSide)
+
+data EventType = LimitOrder | MarketOrder | Cancellation | Modification
 
 type Event = ([Proposal], Maybe Order)
 type EventBook = (ProposalBook, Maybe Order)
@@ -360,6 +362,21 @@ fillsVerificationLog = "Order matches NOT consistent with Fills file"
 rebuildLOB :: V.Vector Proposal -> V.Vector Order -> [(TimeOfDay, Snapshot)]
 rebuildLOB ps os = fmap (fmap shoot) . rebuildEventBook (V.toList ps) $ V.toList os
 
+countActiveProposals :: ProposalBook -> Int
+countActiveProposals = length . filterActive . M.elems
+
+implyEventType :: AugmentedEventBook -> AugmentedEventBook -> EventType
+implyEventType (pb, _, _, _, _) (pb', o, p, _, _)
+   = let impliedByProposals = case compare (countActiveProposals pb') $ countActiveProposals pb
+                              of   GT -> LimitOrder
+                                   EQ -> Modification
+                                   LT -> Cancellation
+     in  maybe impliedByProposals (const MarketOrder)  $ toEitherAggression p o
+
+rebuildEventTypes :: [AugmentedEventBook] -> [EventType]
+rebuildEventTypes [] = empty
+rebuildEventTypes es@(_:es') = LimitOrder:zipWith implyEventType es es'
+
 toEitherAggression :: Maybe AggrProposal -> Maybe Order -> Maybe (Either AggrProposal Order)
 toEitherAggression  Nothing  Nothing = Nothing
 toEitherAggression (Just p)  Nothing = Just (Left p)
@@ -373,6 +390,14 @@ rebuildLOBWithLog ps os fs = let eb = rebuildEventBook (V.toList ps) (V.toList o
                                  trades = catMaybes $ (\(x, y) -> maybe Nothing (Just . (, y)) x) . (\(_, o, p, t, _) -> (toEitherAggression p o, t)) . snd <$> eb
                                  log' = maybe empty (const fillsVerificationLog) $ verifyTradesWithFills (V.toList fs) trades
                              in  (lob, log, log')
+
+rebuildRichLOB :: V.Vector Proposal -> V.Vector Order -> V.Vector Fill -> ([(TimeOfDay, (Snapshot, PrioritisedBook, EventType))], String, String)
+rebuildRichLOB ps os fs = let eb = rebuildEventBook (V.toList ps) (V.toList os)
+                              log = unlines . filter (not . null) $ shortErrorLog . snd <$> eb
+                              trades = catMaybes $ (\(x, y) -> maybe Nothing (Just . (, y)) x) . (\(_, o, p, t, _) -> (toEitherAggression p o, t)) . snd <$> eb
+                              log' = maybe empty (const fillsVerificationLog) $ verifyTradesWithFills (V.toList fs) trades
+                              lob = zip <$> fmap fst <*> (zip3 <$> fmap shoot <*> const (snd <$> trades) <*> rebuildEventTypes) . fmap snd $ eb
+                          in  (lob, log, log')
 
 rebuildLOBXRay :: V.Vector Proposal -> V.Vector Order -> [(TimeOfDay, Snapshot)]
 rebuildLOBXRay ps os = fmap (fmap shootXRay) $ rebuildEventBook (V.toList ps) (V.toList os)
