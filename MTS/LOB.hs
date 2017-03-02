@@ -32,7 +32,7 @@ type AskSide = LOBSide
 type BidSide = LOBSide
 type Snapshot = (BidSide, AskSide)
 
-data EventType = LimitOrder | MarketOrder | Cancellation | Modification
+data EventType = LimitOrder | MarketOrder | Cancellation | Modification deriving (Eq, Read, Show)
 
 type Event = ([Proposal], Maybe Order)
 type EventBook = (ProposalBook, Maybe Order)
@@ -310,7 +310,7 @@ augmentEventBookWithAggrProposal pb p (t, (ps, _)) = let pb' = incorporatePropos
                                                      in  (time p, (pb', empty, Just p, trades, log))
 
 augmentEventTimeSeries :: [(TimeOfDay, Event)] -> [(TimeOfDay, AugmentedEventBook)]
-augmentEventTimeSeries = snd . foldr f (empty, empty)
+augmentEventTimeSeries = reverse . snd . foldr f (empty, empty)
   where f :: (TimeOfDay, Event)
           -> (Maybe AggrProposal, [(TimeOfDay, AugmentedEventBook)])
           -> (Maybe AggrProposal, [(TimeOfDay, AugmentedEventBook)])
@@ -353,7 +353,7 @@ verifyTradesWithFills fs [] = Nothing
 verifyTradesWithFills fs trades@((o, _):_) = let b = either bondCode bondCode o
                                                  d = either date date o
                                                  fs' = filterFillsByBondAndDate b d fs
-                                             in if fillToQtiesAndPrices fs' == mconcat (uncurry tradesToQtiesAndPrices <$> reverse trades)
+                                             in if fillToQtiesAndPrices fs' == mconcat (uncurry tradesToQtiesAndPrices <$> trades)
                                                 then Nothing else Just FillVerification
 
 fillsVerificationLog :: String
@@ -396,7 +396,7 @@ rebuildRichLOB ps os fs = let eb = rebuildEventBook (V.toList ps) (V.toList os)
                               log = unlines . filter (not . null) $ shortErrorLog . snd <$> eb
                               trades = catMaybes $ (\(x, y) -> maybe Nothing (Just . (, y)) x) . (\(_, o, p, t, _) -> (toEitherAggression p o, t)) . snd <$> eb
                               log' = maybe empty (const fillsVerificationLog) $ verifyTradesWithFills (V.toList fs) trades
-                              lob = zip <$> fmap fst <*> (zip3 <$> fmap shoot <*> const (snd <$> trades) <*> rebuildEventTypes) . fmap snd $ eb
+                              lob = zip <$> fmap fst <*> (zip3 <$> fmap shoot <*> fmap (\(_, _, _, x, _) -> x) <*> rebuildEventTypes) . fmap snd $ eb
                           in  (lob, log, log')
 
 rebuildLOBXRay :: V.Vector Proposal -> V.Vector Order -> [(TimeOfDay, Snapshot)]
