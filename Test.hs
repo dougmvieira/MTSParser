@@ -78,7 +78,7 @@ testRebuildLOBWithTrades = do
   putStrLn log'
   B.writeFile "dataWithTrades.txt" $ encodeDepth3LOB lob
 
-testRebuildRichLOB = do
+testRebuildLvl1LOB = do
   psText <- proposalExamples'
   osText <- orderExamples
   fsText <- fillExamples
@@ -88,8 +88,19 @@ testRebuildRichLOB = do
   (lob, log, log') <- return $ rebuildRichLOB ps os fs
   putStrLn log
   putStrLn log'
-  B.writeFile "dataWithTrades.txt" $ encodeLvl1LOB lob
+  B.writeFile "lvl1LOB.txt" $ encodeLvl1LOB lob
 
+testRebuildTopOfBook = do
+  psText <- proposalExamples'
+  osText <- orderExamples
+  fsText <- fillExamples
+  (Right ps) <- return . parseProposal $ psText
+  (Right os) <- return . parseOrder $ osText
+  (Right fs) <- return . parseFill $ fsText
+  (lob, log, log') <- return $ rebuildLOBWithLog ps os fs
+  putStrLn log
+  putStrLn log'
+  B.writeFile "topOfBook.txt" $ encodeTopOfBookLOB lob
 
 testRebuildOn :: V.Vector Order -> String -> IO ()
 testRebuildOn os bondname = do

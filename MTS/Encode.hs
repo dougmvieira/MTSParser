@@ -3,7 +3,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 
-module MTS.Encode (encodeDepth3LOB, encodeLvl1LOB) where
+module MTS.Encode (encodeDepth3LOB, encodeLvl1LOB, encodeTopOfBookLOB) where
 
 import Control.Applicative
 import Data.Time (TimeOfDay,
@@ -20,6 +20,7 @@ import Data.Csv (ToField,
                  ToNamedRecord,
                  toNamedRecord,
                  namedRecord)
+import Data.List (nubBy)
 import GHC.Exts (groupWith, the)
 import MTS.LOB (Price,
                 Quantity,
@@ -175,3 +176,71 @@ toLvl1LOB (x:xs) = reverse . foldl accum [lvl1LOBslice x] $ lvl1LOBslice <$> xs
 
 encodeLvl1LOB :: [(TimeOfDay, (Snapshot, PrioritisedBook, EventType))] -> B.ByteString
 encodeLvl1LOB = encodeByName lvl1LOBHeader . toLvl1LOB
+
+
+-- Top of Book LOB
+
+type TopOfBookLOB = (TimeOfDay,
+                     Price,
+                     Quantity,
+                     Price,
+                     Quantity,
+                     OrderFlowSign)
+
+instance ToNamedRecord TopOfBookLOB where
+   toNamedRecord (t, bp, bs, ap, as, et)
+      = namedRecord ["Time"               .= t,
+                     "BidPrice"           .= bp,
+                     "BidSize"            .= bs,
+                     "AskPrice"           .= ap,
+                     "AskSize"            .= as,
+                     "OrderFlowSign"      .= et]
+
+topOfBookLOBHeader :: Header
+topOfBookLOBHeader = V.fromList . map C.pack $ ["Time",
+                                                "BidPrice",
+                                                "BidSize",
+                                                "AskPrice",
+                                                "AskSize",
+                                                "OrderFlowSign"]
+
+instance ToField OrderFlowSign where
+   toField = C.pack . show
+
+type TopOfBook = ((Price, Quantity), -- Bid side
+                  (Price, Quantity)) -- Ask side
+
+data OrderFlowSign = Bullish | Bearish | Undefined deriving (Eq, Show, Read)
+
+orderFlowSignSlice :: TopOfBook -> TopOfBook -> OrderFlowSign
+orderFlowSignSlice ((0, _), _) _ = Undefined
+orderFlowSignSlice (_, (0, _)) _ = Undefined
+orderFlowSignSlice _ ((0, _), _) = Undefined
+orderFlowSignSlice _ (_, (0, _)) = Undefined
+orderFlowSignSlice ((bp, bs), (ap, as)) ((bp', bs'), (ap', as'))
+   | bp' > bp && ap' < ap = Undefined
+   | bp' > bp || ap' > ap = Bullish
+   | bp' < bp && ap' > ap = Undefined
+   | bp' < bp || ap' < ap = Bearish
+   | bs' > bs && as' > as = Undefined
+   | bs' > bs || as' < as = Bullish
+   | bs' < bs && as' < as = Undefined
+   | bs' < bs || as' > as = Bearish
+   | otherwise            = Undefined
+
+orderFlowSign :: [TopOfBook] -> [OrderFlowSign]
+orderFlowSign = zipWith orderFlowSignSlice <$> (((0, 0), (0, 0)):) <*> id
+
+toTopOfBook :: Snapshot -> TopOfBook
+toTopOfBook = (,) <$> extractBestBid . fst <*> extractBestAsk . snd
+
+nubWith :: Eq b => (a -> b) -> [a] -> [a]
+nubWith f = nubBy $ \x y -> f x == f y
+
+toTopOfBookLOB :: [(TimeOfDay, Snapshot)] -> [TopOfBookLOB]
+toTopOfBookLOB = uncurry (zipWith flatten) . fmap (zip <$> id <*> orderFlowSign) . unzip . nubWith snd . fmap (fmap toTopOfBook)
+   where flatten :: TimeOfDay -> (TopOfBook, OrderFlowSign) -> TopOfBookLOB
+         flatten t (((bp, bs), (ap, as)), ofs) = (t, bp, bs, ap, as, ofs)
+
+encodeTopOfBookLOB :: [(TimeOfDay, Snapshot)] -> B.ByteString
+encodeTopOfBookLOB = encodeByName topOfBookLOBHeader . toTopOfBookLOB
