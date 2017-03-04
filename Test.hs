@@ -102,6 +102,18 @@ testRebuildTopOfBook = do
   putStrLn log'
   B.writeFile "topOfBook.txt" $ encodeTopOfBookLOB lob
 
+testRebuildRegGridLOB = do
+  psText <- proposalExamples'
+  osText <- orderExamples
+  fsText <- fillExamples
+  (Right ps) <- return . parseProposal $ psText
+  (Right os) <- return . parseOrder $ osText
+  (Right fs) <- return . parseFill $ fsText
+  (lob, log, log') <- return $ rebuildRichLOB ps os fs
+  putStrLn log
+  putStrLn log'
+  B.writeFile "regGridLOB.txt" $ encodeRegGridLOB (1 / (24 * 60 * 60)) $ fmap (\(x, y, _) -> (x, y)) <$> lob
+
 testRebuildOn :: V.Vector Order -> String -> IO ()
 testRebuildOn os bondname = do
   putStrLn $ "Rebuilding bond " ++ bondname

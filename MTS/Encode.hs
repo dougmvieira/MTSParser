@@ -3,7 +3,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 
-module MTS.Encode (encodeDepth3LOB, encodeLvl1LOB, encodeTopOfBookLOB) where
+module MTS.Encode (encodeDepth3LOB, encodeLvl1LOB, encodeTopOfBookLOB, encodeRegGridLOB) where
 
 import Control.Applicative
 import Data.Time (TimeOfDay,
@@ -231,6 +231,9 @@ orderFlowSignSlice ((bp, bs), (ap, as)) ((bp', bs'), (ap', as'))
 orderFlowSign :: [TopOfBook] -> [OrderFlowSign]
 orderFlowSign = zipWith orderFlowSignSlice <$> (((0, 0), (0, 0)):) <*> id
 
+coupleWithOrderFlowSign :: [TopOfBook] -> [(TopOfBook, OrderFlowSign)]
+coupleWithOrderFlowSign = zip <$> id <*> orderFlowSign
+
 toTopOfBook :: Snapshot -> TopOfBook
 toTopOfBook = (,) <$> extractBestBid . fst <*> extractBestAsk . snd
 
@@ -244,3 +247,77 @@ toTopOfBookLOB = uncurry (zipWith flatten) . fmap (zip <$> id <*> orderFlowSign)
 
 encodeTopOfBookLOB :: [(TimeOfDay, Snapshot)] -> B.ByteString
 encodeTopOfBookLOB = encodeByName topOfBookLOBHeader . toTopOfBookLOB
+
+-- Regularly-gridded LOB
+
+type RegGridLOB = (TimeOfDay,
+                   Price,
+                   Quantity,
+                   Price,
+                   Quantity,
+                   Price,
+                   Quantity,
+                   Quantity,
+                   Int)
+
+regGridLOBHeader :: Header
+regGridLOBHeader = V.fromList . map C.pack $ ["Time",
+                                              "BidPrice",
+                                              "BidSize",
+                                              "AskPrice",
+                                              "AskSize",
+                                              "LastPrice",
+                                              "LastSize",
+                                              "LastVolume",
+                                              "OrderFlowImbalance"]
+
+instance ToNamedRecord RegGridLOB where
+   toNamedRecord (t, bp, bs, ap, as, lp, ls, lv, ofi)
+      = namedRecord ["Time"               .= t,
+                     "BidPrice"           .= bp,
+                     "BidSize"            .= bs,
+                     "AskPrice"           .= ap,
+                     "AskSize"            .= as,
+                     "LastPrice"          .= lp,
+                     "LastSize"           .= ls,
+                     "LastVolume"         .= lv,
+                     "OrderFlowImbalance" .= ofi]
+
+toResolution :: RealFrac a => a -> a -> a
+toResolution res = (* res) . fromIntegral . ceiling . (/ res)
+
+toRegularGrid :: Rational -> [(TimeOfDay, a)] -> [(TimeOfDay, [(TimeOfDay, a)])]
+toRegularGrid dt = fmap colapseRepeatedTime . groupWith fst . fmap stampGridTime
+   where stampGridTime :: (TimeOfDay, a) -> (TimeOfDay, (TimeOfDay, a))
+         stampGridTime = (,) <$> dayFractionToTimeOfDay . toResolution dt . timeOfDayToDayFraction . fst <*> id
+         colapseRepeatedTime :: [(TimeOfDay, v)] -> (TimeOfDay, [v])
+         colapseRepeatedTime = ((,) <$> the . fst <*> snd) . unzip
+
+toOFI :: [OrderFlowSign] -> Int
+toOFI = (-) <$> length . filter (== Bullish) <*> length . filter (== Bearish)
+
+firstThatIsNotXOrX :: Eq a => a -> [a] -> a
+firstThatIsNotXOrX x xs = case filter (/= x) xs of []     -> x
+                                                   (x':_) -> x'
+
+lastThatIsNotXOrX :: Eq a => a -> [a] -> a
+lastThatIsNotXOrX x = firstThatIsNotXOrX x . reverse
+
+rebuiltTopOfBookWithTrades :: [(TimeOfDay, (Snapshot, PrioritisedBook))]
+                           -> [(TimeOfDay, ((Price, Quantity, Price), (TopOfBook, OrderFlowSign)))]
+rebuiltTopOfBookWithTrades = uncurry zip . fmap (uncurry zip . fmap coupleWithOrderFlowSign . unzip) . unzip . nubWith snd . fmap (fmap $ (,) <$> summariseTrades . snd <*> toTopOfBook . fst)
+
+toRegGridSlice :: [((Price, Quantity, Price), (TopOfBook, OrderFlowSign))]
+               -> ((Price, Quantity, Price), (TopOfBook, Int))
+toRegGridSlice = ((,) <$> lastThatIsNotXOrX (0, 0, 0) . fst <*> ((,) <$> last . fst <*> toOFI . snd) . unzip . snd) . unzip
+
+flattenRegGridSlice :: (TimeOfDay, ((Price, Quantity, Price), (TopOfBook, Int)))
+                    -> RegGridLOB
+flattenRegGridSlice (t, ((lp, lq, lv), (((bp, bs), (ap, as)), ofi))) =
+   (t, bp, bs, ap, as, lp, lq, lv, ofi)
+
+toRegGridLOB :: Rational -> [(TimeOfDay, (Snapshot, PrioritisedBook))] -> [RegGridLOB]
+toRegGridLOB dt = fmap flattenRegGridSlice . uncurry zip . fmap (fmap $ toRegGridSlice . snd . unzip) . unzip . toRegularGrid dt . rebuiltTopOfBookWithTrades
+
+encodeRegGridLOB :: Rational -> [(TimeOfDay, (Snapshot, PrioritisedBook))] -> B.ByteString
+encodeRegGridLOB dt = encodeByName regGridLOBHeader . toRegGridLOB dt
