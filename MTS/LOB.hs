@@ -6,13 +6,13 @@ import MTS.Types
 import MTS.Decode
 import Control.Applicative
 import Data.Fixed (Pico)
-import Data.List (find, sortOn)
+import Data.List (find, nub, nubBy, sort, sortOn)
 import Data.Maybe (catMaybes, fromJust)
 import Data.Monoid
 import Data.Text (Text, pack, unpack)
 import Data.Time (Day,
                   TimeOfDay(..))
-import GHC.Exts (sortWith)
+import GHC.Exts (groupWith, sortWith)
 import qualified Data.Vector as V
 import qualified Data.Map as M
 
@@ -42,6 +42,9 @@ type BondCode = Text
 
 type SymEither a = Either a a
 
+
+nubWith :: Eq b => (a -> b) -> [a] -> [a]
+nubWith f = nubBy $ \x y -> f x == f y
 
 choice2 :: (Alternative f, Alternative g) => (f a, g b) -> (f a, g b) -> (f a, g b)
 choice2 (x, y) (x', y') = (x <|> x', y <|> y')
@@ -83,8 +86,10 @@ filterActive :: [Proposal] -> [Proposal]
 filterActive ps = let t = maximum $ map time ps
                   in filter ((&&) <$> isNotExpired t <*> isActive) ps
 
+-- TODO: See better approach (deactivated filterMTS because MTS orders interact with EBM)
 filterMTS :: MTSEvent a => [a] -> [a]
-filterMTS = filter $ (==mtsCode) . marketCode
+--filterMTS = filter $ (==mtsCode) . marketCode
+filterMTS = id
 
 filterDate :: MTSEvent a => Day -> [a] -> [a]
 filterDate d = filter $ (==d) . date
@@ -133,19 +138,21 @@ shootXRay eb = (aggregQties . map pBidXRay . filterActiveProposals . fst5 $ eb,
                 aggregQties . map pAskXRay . filterActiveProposals . fst5 $ eb)
 
 hasDuplicate :: Eq a => [a] -> Bool
-hasDuplicate [] = False
-hasDuplicate (x:xs) = x `elem` xs && hasDuplicate xs
+hasDuplicate = (/=) <*> nub
 
 hasDuplicatePrices :: ProposalBook -> Bool
 hasDuplicatePrices pb = let ((bs, as), _) = M.mapAccum (\(bs', as') p -> ((pBidPrice p:bs', pAskPrice p:as'), ())) ([],[]) pb
                         in hasDuplicate bs || hasDuplicate as
 
 toProposalBook :: [Proposal] -> ProposalBook
-toProposalBook = sanityCheck . M.fromList . map ((,) <$> eventID <*> id) where
-   sanityCheck :: ProposalBook -> ProposalBook
-   sanityCheck pb = if hasDuplicatePrices pb
-            then error $ "Invalid duplicate time proposals: " ++ show pb
-            else pb
+toProposalBook = M.fromList . fmap ((,) <$> eventID <*> id)
+
+--TODO: Consider more carefully the sanityCheck issue
+--toProposalBook = sanityCheck . M.fromList . map ((,) <$> eventID <*> id) where
+--   sanityCheck :: ProposalBook -> ProposalBook
+--   sanityCheck pb = if hasDuplicatePrices pb
+--            then error $ "Invalid duplicate time proposals: " ++ show pb
+--            else pb
 
 toSignedBook :: [Proposal] -> SignedBook
 toSignedBook = foldl (\sb p ->
@@ -179,8 +186,7 @@ allOrNone p q lob = let (qRem, _, trades) = walkTheLOB p (q, lob, empty)
                     in if qRem == 0 then reverse trades else empty
 
 proposalAggr :: Price -> Quantity -> PrioritisedBook -> PrioritisedBook
-proposalAggr p q lob = let (qRem, _, trades) = walkTheLOB p (q, lob, empty)
-                       in if qRem == 0 then reverse trades else undefined -- TODO
+proposalAggr = fillAndKill
 
 executeOrderWith :: OrderType -> Price -> Quantity -> PrioritisedBook -> PrioritisedBook
 executeOrderWith FillAndKill = fillAndKill
@@ -190,7 +196,7 @@ executeOrder :: Order -> PrioritisedBook -> PrioritisedBook
 executeOrder = executeOrderWith <$> oOrderType <*> signedPrice <*> qty
 
 executeProposal :: AggrProposal -> PrioritisedBook -> PrioritisedBook
-executeProposal = proposalAggr <$> signedPrice <*> qty
+executeProposal p = (proposalAggr <$> signedPrice <*> qty $ p) . filter ((/= (signedPrice p, time p)) . fst)
 
 execute :: Either AggrProposal Order -> PrioritisedBook -> PrioritisedBook
 execute (Left p) = executeProposal p
@@ -212,10 +218,10 @@ fetchByPriceTime :: Price -> TimeOfDay -> [Proposal] -> Proposal
 fetchByPriceTime p t ps = case filter ((&&) <$> isAtTime t <*> isProposalAtSignedPrice p) ps
                           of []  -> error $ "No proposal found at time " ++ show t ++ " and price " ++ show p ++ "."
                              [r] -> r
-                             _   -> error $ "Multiple proposals have the same price and time."
+                             rs   -> error $ "Multiple proposals at price " ++ show p ++ " and time " ++ show t ++ ". The proposals are:\n" ++ unlines (show <$> rs)
 
 fromPrioritisedBook :: [Proposal] -> PrioritisedBook -> [Proposal]
-fromPrioritisedBook ps = map (\p -> uncurry fetchByPriceTime (fst p) ps)
+fromPrioritisedBook ps = map (\p -> uncurry fetchByPriceTime (fst p) $ filterActive ps)
 
 implyVerb :: PrioritisedBook -> Verb
 implyVerb [] = error "Cannot imply verb from empty prioritised book."
@@ -241,7 +247,7 @@ validateExecution v ps pb ps' = let psAligned = fromPrioritisedBook ps pb
 validatedTrades :: [Proposal] -> Either AggrProposal Order -> [Proposal] -> SymEither PrioritisedBook
 validatedTrades ps o ps' = let pb = toPrioritisedBook (either verb verb o) ps
                                trades = execute o pb
-                               psToValidate = case o of Left p  -> filter ((/= eventID p) . eventID) ps'
+                               psToValidate = case o of Left p  -> filter ((/= eventID p) . eventID) ps' -- TODO: check if the aggressing limit order stays in the LOB with the remaining size
                                                         Right _ -> ps'
                            in if   validateExecution (either verb verb o) ps (executedProposals trades pb) psToValidate
                               then Right trades
@@ -249,7 +255,7 @@ validatedTrades ps o ps' = let pb = toPrioritisedBook (either verb verb o) ps
 
 validatedTradesFallback :: [Proposal] -> Either AggrProposal Order -> [Proposal] -> PrioritisedBook
 validatedTradesFallback ps o ps' = let err = error "Fallback mechanism failed."
-                                       psAligned = catMaybes $ alignEventByID ps' ps
+                                       psAligned = catMaybes $ alignEventByID (nubWith eventID ps') ps
                                    in  either err id $ validatedTrades psAligned o ps'
 
 orderMatchingLongErrorLog :: [Proposal] -> [Proposal] -> Order -> PrioritisedBook -> String
@@ -295,7 +301,25 @@ tradesFromOrder pb ps o = let pb' = M.elems pb
                               constEither [constEither ProposalMatching OrderMatching o] [] eitherTrades)
 
 incorporateProposals :: ProposalBook -> [Proposal] -> ProposalBook
-incorporateProposals pb ps = M.union (toProposalBook ps) pb
+incorporateProposals pb ps = M.union (toProposalBook $ solveAmbiguity pb ps) pb
+
+pIDPricesQties :: Proposal -> (ID, Price, Quantity, Price, Quantity)
+pIDPricesQties = (,,,,) <$> eventID <*> bidPrice <*> bidQty <*> askPrice <*> askQty
+
+solveAmbiguity :: ProposalBook -> [Proposal] -> [Proposal]
+solveAmbiguity pb = mconcat . fmap solveEach . groupWith eventID
+   where solveEach :: [Proposal] -> [Proposal]
+         solveEach [p] = [p]
+         solveEach ps  = let psActive = filter ((== 0) . pCheck_Logon) ps
+                             psInactive = filter ((== 1) . pCheck_Logon) ps
+                          in case length psActive `compare` length psInactive
+                             of LT -> psInactive
+                                GT -> psActive
+                                EQ -> case M.lookup (eventID $ head ps) pb
+                                      of   Nothing -> psInactive
+                                           Just p  -> if   pIDPricesQties p == pIDPricesQties (head ps) || marketCode p == mtsCode
+                                                      then psActive else psInactive -- I have no idea if this EBM/MTS difference holds for other cases
+
 
 augmentEventBook :: ProposalBook -> (TimeOfDay, Event) -> (TimeOfDay, AugmentedEventBook)
 augmentEventBook pb (t, (ps, o)) = let pb' = incorporateProposals pb ps
@@ -326,9 +350,9 @@ augmentEventTimeSeries = reverse . snd . foldr f (empty, empty)
 
 getAggresiveProposal :: [Proposal] -> [Proposal] -> Maybe AggrProposal
 getAggresiveProposal _  []  = Nothing
-getAggresiveProposal ps [p] = let ps' = filter isActive ps
-                                  bidAggr = (&&) <$> not . null <*> (bidPrice p >=) . minimum $ askPrice <$> ps'
-                                  askAggr = (&&) <$> not . null <*> (askPrice p <=) . maximum $ bidPrice <$> ps'
+getAggresiveProposal ps [p] = let ps' = filter ((/= eventID p) . eventID) $ filter isActive ps
+                                  bidAggr = (&&) <$> not . null <*> (bidPrice p >=) . minimum $ askPrice <$> filter ((/= BidOnly) . pQuotingSide) ps'
+                                  askAggr = (&&) <$> not . null <*> (askPrice p <=) . maximum $ bidPrice <$> filter ((/= AskOnly) . pQuotingSide) ps'
                                   justPIf b v = if b then Just $ AggrProposal (p, v) else Nothing
                               in  case pQuotingSide p
                                   of   BidOnly   -> justPIf bidAggr Buy
@@ -353,7 +377,7 @@ verifyTradesWithFills fs [] = Nothing
 verifyTradesWithFills fs trades@((o, _):_) = let b = either bondCode bondCode o
                                                  d = either date date o
                                                  fs' = filterFillsByBondAndDate b d fs
-                                             in if fillToQtiesAndPrices fs' == mconcat (uncurry tradesToQtiesAndPrices <$> trades)
+                                             in if sort (fillToQtiesAndPrices fs') == sort (mconcat $ uncurry tradesToQtiesAndPrices <$> trades)
                                                 then Nothing else Just FillVerification
 
 fillsVerificationLog :: String

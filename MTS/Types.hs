@@ -61,12 +61,12 @@ data MTSSide = BothSides | AskOnly | BidOnly deriving (Eq, Show)
 data Verb = Buy | Sell deriving (Eq, Show)
 data OrderType = AllOrNone | FillAndKill deriving (Eq, Show)
 
-newtype MTSDay = MTSDay { getMTSDay :: Day } deriving Show
-newtype MTSTime = MTSTime { getMTSTime :: TimeOfDay } deriving Show
-newtype MTSPico = MTSPico { getMTSPico :: Pico } deriving Show
-newtype MTSQty = MTSQty { getMTSQty :: Double } deriving Show
-newtype MTSLots = MTSLots { qtyFromLots :: Double } deriving Show
-newtype MTSYield = MTSYield { getMTSYield :: Double } deriving Show
+newtype MTSDay = MTSDay { getMTSDay :: Day } deriving (Eq, Show)
+newtype MTSTime = MTSTime { getMTSTime :: TimeOfDay } deriving (Eq, Show)
+newtype MTSPico = MTSPico { getMTSPico :: Pico } deriving (Eq, Show)
+newtype MTSQty = MTSQty { getMTSQty :: Double } deriving (Eq, Show)
+newtype MTSLots = MTSLots { qtyFromLots :: Double } deriving (Eq, Show)
+newtype MTSYield = MTSYield { getMTSYield :: Double } deriving (Eq, Show)
 
 
 data Proposal = Proposal { pMarketCode  :: Text
@@ -90,7 +90,7 @@ data Proposal = Proposal { pMarketCode  :: Text
                          , pBidYield    :: MTSYield
                          , pAskYield    :: MTSYield
                          , pProposalID  :: Int
-                         , pQuotingSide :: MTSSide } deriving (Show, Generic)
+                         , pQuotingSide :: MTSSide } deriving (Show, Generic, Eq)
 
 newtype AggrProposal = AggrProposal { getProposal :: (Proposal, Verb) } deriving Show
 

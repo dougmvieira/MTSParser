@@ -114,14 +114,17 @@ testRebuildRegGridLOB = do
   putStrLn log'
   B.writeFile "regGridLOB.txt" $ encodeRegGridLOB (1 / (24 * 60 * 60)) $ fmap (\(x, y, _) -> (x, y)) <$> lob
 
-testRebuildOn :: V.Vector Order -> String -> IO ()
-testRebuildOn os bondname = do
+testRebuildOn :: V.Vector Order -> V.Vector Fill -> String -> IO ()
+testRebuildOn os fs bondname = do
   putStrLn $ "Rebuilding bond " ++ bondname
   psText <- B.readFile $ bondname ++ ".txt"
   (Right ps) <- return . parseProposal $ psText
-  B.writeFile (bondname ++ "rebuilt.txt") . encodeDepth3LOB $ rebuildLOB ps os
+  (lob, log, log') <- return $ rebuildRichLOB ps os fs
+  putStrLn log
+  putStrLn log'
+  B.writeFile ("./rebuilt/" ++ bondname ++ ".txt") $ encodeLvl1LOB lob
 
-{-bondnames = ["IT0000366655",
+bondnames = ["IT0000366655",
              "IT0001086567",
              "IT0001174611",
              "IT0001278511",
@@ -129,28 +132,69 @@ testRebuildOn os bondname = do
              "IT0003242747",
              "IT0003256820",
              "IT0003493258",
-             "IT0003535157",-}
-bondnames = ["IT0003644769",
-             "IT0003745541",
+             "IT0003535157",
+             "IT0003644769",
              "IT0003934657",
              "IT0004009673",
              "IT0004019581",
-             "IT0004085210",
              "IT0004164775",
-             "IT0004243512",
              "IT0004273493",
              "IT0004286966",
              "IT0004356843",
              "IT0004361041",
-             "IT0004380546",
-             "IT0004423957"]
+             "IT0004423957",
+             "IT0004489610",
+             "IT0004513641",
+             "IT0004532559",
+             "IT0004536949",
+             "IT0004594930",
+             "IT0004634132",
+             "IT0004644735",
+             "IT0004695075",
+             "IT0004712748",
+             "IT0004759673",
+             "IT0004761950",
+             "IT0004793474",
+             "IT0004801541",
+             "IT0004820426",
+             "IT0004848831",
+             "IT0004867070",
+             "IT0004880990",
+             "IT0004889033",
+             "IT0004898034",
+             "IT0004907843",
+             "IT0004917792",
+             "IT0004923998",
+             "IT0004953417",
+             "IT0004957574",
+             "IT0004960826",
+             "IT0004966401",
+             "IT0004987191",
+             "IT0004992308",
+             "IT0005001547",
+             "IT0005023459",
+             "IT0005024234",
+             "IT0005028003",
+             "IT0005030504",
+             "IT0005045270",
+             "IT0005058463",
+             "IT0005069395",
+             "IT0005083057",
+             "IT0005086886",
+             "IT0005090318",
+             "IT0005094088",
+             "IT0005106049",
+             "IT0005107708",
+             "IT0005127086",
+             "IT0005135840",
+             "IT0005139099",
+             "IT0005142143"]
 
 testRebuildOnAllBTPs = do
   osText <- orderExamples
+  fsText <- fillExamples
   (Right os) <- return . parseOrder $ osText
-  mapM_ (testRebuildOn os) bondnames
+  (Right fs) <- return . parseFill $ fsText
+  mapM_ (testRebuildOn os fs) bondnames
 
-main = do
-  testOrder
-  testProposal
-  testFill
+main = testRebuildOnAllBTPs
