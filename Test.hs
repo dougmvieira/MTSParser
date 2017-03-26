@@ -124,6 +124,22 @@ testRebuildOn os fs bondname = do
   putStrLn log'
   B.writeFile ("./rebuilt/" ++ bondname ++ ".txt") $ encodeLvl1LOB lob
 
+secsInADay :: Rational
+secsInADay = 24*60*60
+
+testRebuildRegGridOn :: V.Vector Order -> V.Vector Fill -> String -> IO ()
+testRebuildRegGridOn os fs bondname = do
+  putStrLn $ "Rebuilding bond " ++ bondname
+  psText <- B.readFile $ bondname ++ ".txt"
+  (Right ps) <- return . parseProposal $ psText
+  (lob, log, log') <- return $ rebuildRichLOB ps os fs
+  putStrLn log
+  putStrLn log'
+  B.writeFile ("./regGrid/1ms/"   ++ bondname ++ ".txt") $ encodeRegGridLOB (1/(1000*secsInADay)) $ fmap (\(x, y, _) -> (x, y)) <$> lob
+  B.writeFile ("./regGrid/10ms/"  ++ bondname ++ ".txt") $ encodeRegGridLOB (1/( 100*secsInADay)) $ fmap (\(x, y, _) -> (x, y)) <$> lob
+  B.writeFile ("./regGrid/100ms/" ++ bondname ++ ".txt") $ encodeRegGridLOB (1/(  10*secsInADay)) $ fmap (\(x, y, _) -> (x, y)) <$> lob
+  B.writeFile ("./regGrid/1s/"    ++ bondname ++ ".txt") $ encodeRegGridLOB (1/      secsInADay ) $ fmap (\(x, y, _) -> (x, y)) <$> lob
+
 bondnames = ["IT0000366655",
              "IT0001086567",
              "IT0001174611",
@@ -197,4 +213,11 @@ testRebuildOnAllBTPs = do
   (Right fs) <- return . parseFill $ fsText
   mapM_ (testRebuildOn os fs) bondnames
 
-main = testRebuildOnAllBTPs
+testRebuildRegGridOnAllBTPs = do
+  osText <- orderExamples
+  fsText <- fillExamples
+  (Right os) <- return . parseOrder $ osText
+  (Right fs) <- return . parseFill $ fsText
+  mapM_ (testRebuildRegGridOn os fs) bondnames
+
+main = testRebuildRegGridOnAllBTPs
