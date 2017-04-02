@@ -89,11 +89,11 @@ instance ToField TimeOfDay where
 
 extractBestNBid :: Int -> BidSide -> [(Price, Quantity)]
 -- | Extract best N bid. If there are less levels than N, the result is padded with zeros.
-extractBestNBid n = take n . (++ repeat (0.0,0.0)) . M.toDescList 
+extractBestNBid n = take n . (++ repeat (0, 0)) . M.toDescList
 
 extractBestNAsk :: Int -> AskSide -> [(Price, Quantity)]
 -- | Extract best N ask. If there are less levels than N, the result is padded with zeros.
-extractBestNAsk n = take n . (++ repeat (0.0,0.0)) . M.toAscList 
+extractBestNAsk n = take n . (++ repeat (0, 0)) . dropWhile ((== 0) . fst) . M.toAscList
 
 
 snapshotToDepth3LOB :: (TimeOfDay, Snapshot) -> (TimeOfDay, Price, Quantity, Price, Quantity, Price, Quantity
