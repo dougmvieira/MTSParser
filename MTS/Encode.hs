@@ -20,8 +20,8 @@ import Data.Csv (ToField,
                  ToNamedRecord,
                  toNamedRecord,
                  namedRecord)
-import Data.List (nubBy)
-import GHC.Exts (groupWith, the)
+import Data.List (groupBy)
+import GHC.Exts (the)
 import MTS.LOB (Price,
                 Quantity,
                 Bid,
@@ -185,7 +185,7 @@ type TopOfBookLOB = (TimeOfDay,
                      Quantity,
                      Price,
                      Quantity,
-                     OrderFlowSign)
+                     Quantity)
 
 instance ToNamedRecord TopOfBookLOB where
    toNamedRecord (t, bp, bs, ap, as, et)
@@ -194,7 +194,7 @@ instance ToNamedRecord TopOfBookLOB where
                      "BidSize"            .= bs,
                      "AskPrice"           .= ap,
                      "AskSize"            .= as,
-                     "OrderFlowSign"      .= et]
+                     "OrderFlowImbalance" .= et]
 
 topOfBookLOBHeader :: Header
 topOfBookLOBHeader = V.fromList . map C.pack $ ["Time",
@@ -202,51 +202,49 @@ topOfBookLOBHeader = V.fromList . map C.pack $ ["Time",
                                                 "BidSize",
                                                 "AskPrice",
                                                 "AskSize",
-                                                "OrderFlowSign"]
-
-instance ToField OrderFlowSign where
-   toField = C.pack . show
+                                                "OrderFlowImbalance"]
 
 type TopOfBook = ((Price, Quantity), -- Bid side
                   (Price, Quantity)) -- Ask side
 
-data OrderFlowSign = Bullish | Bearish | Undefined deriving (Eq, Show, Read)
+orderFlowImbalBid :: (Price, Quantity) -> (Price, Quantity) -> Quantity
+orderFlowImbalBid (_, q) (0 ,  _) = -q
+orderFlowImbalBid (0, _) (_ , q') = q'
+orderFlowImbalBid (p, q) (p', q') | p == p' = q' - q
+                                  | p <  p' = q'
+                                  | p >  p' =    - q
 
-orderFlowSignSlice :: TopOfBook -> TopOfBook -> OrderFlowSign
-orderFlowSignSlice ((0, _), _) _ = Undefined
-orderFlowSignSlice (_, (0, _)) _ = Undefined
-orderFlowSignSlice _ ((0, _), _) = Undefined
-orderFlowSignSlice _ (_, (0, _)) = Undefined
-orderFlowSignSlice ((bp, bs), (ap, as)) ((bp', bs'), (ap', as'))
-   | bp' > bp && ap' < ap = Undefined
-   | bp' > bp || ap' > ap = Bullish
-   | bp' < bp && ap' > ap = Undefined
-   | bp' < bp || ap' < ap = Bearish
-   | bs' > bs && as' > as = Undefined
-   | bs' > bs || as' < as = Bullish
-   | bs' < bs && as' < as = Undefined
-   | bs' < bs || as' > as = Bearish
-   | otherwise            = Undefined
+orderFlowImbalAsk :: (Price, Quantity) -> (Price, Quantity) -> Quantity
+orderFlowImbalAsk (p, q) (p', q') = orderFlowImbalBid (-p, q) (-p', q')
 
-orderFlowSign :: [TopOfBook] -> [OrderFlowSign]
-orderFlowSign = zipWith orderFlowSignSlice <$> (((0, 0), (0, 0)):) <*> id
+orderFlowImbalSlice :: TopOfBook -> TopOfBook -> Quantity
+orderFlowImbalSlice (b, a) (b', a') = orderFlowImbalBid b b' - orderFlowImbalAsk a a'
 
-coupleWithOrderFlowSign :: [TopOfBook] -> [(TopOfBook, OrderFlowSign)]
-coupleWithOrderFlowSign = zip <$> id <*> orderFlowSign
+orderFlowImbal :: [TopOfBook] -> [Quantity]
+orderFlowImbal [] = []
+orderFlowImbal xs@(((_, bs), (_, as)):xs') = bs - as:zipWith orderFlowImbalSlice xs xs'
+
+coupleWithOrderFlowImbal :: [TopOfBook] -> [(TopOfBook, Quantity)]
+coupleWithOrderFlowImbal = zip <$> id <*> orderFlowImbal
 
 toTopOfBook :: Snapshot -> TopOfBook
 toTopOfBook = (,) <$> extractBestBid . fst <*> extractBestAsk . snd
 
-nubWith :: Eq b => (a -> b) -> [a] -> [a]
-nubWith f = nubBy $ \x y -> f x == f y
+groupWith :: Eq b => (a -> b) -> [a] -> [[a]]
+groupWith f = groupBy (\x y -> f x == f y)
+
+compressWith :: (Show a, Ord b) => (a -> b) -> [a] -> [a]
+-- | Removes consecutive duplicates, where duplicates are in the sense of the input function. Keeps the first of each group of duplicate elements.
+compressWith = (fmap head .) . groupWith
 
 toTopOfBookLOB :: [(TimeOfDay, Snapshot)] -> [TopOfBookLOB]
-toTopOfBookLOB = uncurry (zipWith flatten) . fmap (zip <$> id <*> orderFlowSign) . unzip . nubWith snd . fmap (fmap toTopOfBook)
-   where flatten :: TimeOfDay -> (TopOfBook, OrderFlowSign) -> TopOfBookLOB
+toTopOfBookLOB = uncurry (zipWith flatten) . fmap (zip <$> id <*> orderFlowImbal) . unzip . compressWith snd . fmap (fmap toTopOfBook)
+   where flatten :: TimeOfDay -> (TopOfBook, Quantity) -> TopOfBookLOB
          flatten t (((bp, bs), (ap, as)), ofs) = (t, bp, bs, ap, as, ofs)
 
 encodeTopOfBookLOB :: [(TimeOfDay, Snapshot)] -> B.ByteString
 encodeTopOfBookLOB = encodeByName topOfBookLOBHeader . toTopOfBookLOB
+
 
 -- Regularly-gridded LOB
 
@@ -258,7 +256,7 @@ type RegGridLOB = (TimeOfDay,
                    Price,
                    Quantity,
                    Quantity,
-                   Int)
+                   Quantity)
 
 regGridLOBHeader :: Header
 regGridLOBHeader = V.fromList . map C.pack $ ["Time",
@@ -293,9 +291,6 @@ toRegularGrid dt = fmap colapseRepeatedTime . groupWith fst . fmap stampGridTime
          colapseRepeatedTime :: [(TimeOfDay, v)] -> (TimeOfDay, [v])
          colapseRepeatedTime = ((,) <$> the . fst <*> snd) . unzip
 
-toOFI :: [OrderFlowSign] -> Int
-toOFI = (-) <$> length . filter (== Bullish) <*> length . filter (== Bearish)
-
 firstThatIsNotXOrX :: Eq a => a -> [a] -> a
 firstThatIsNotXOrX x xs = case filter (/= x) xs of []     -> x
                                                    (x':_) -> x'
@@ -304,14 +299,14 @@ lastThatIsNotXOrX :: Eq a => a -> [a] -> a
 lastThatIsNotXOrX x = firstThatIsNotXOrX x . reverse
 
 rebuiltTopOfBookWithTrades :: [(TimeOfDay, (Snapshot, PrioritisedBook))]
-                           -> [(TimeOfDay, ((Price, Quantity, Price), (TopOfBook, OrderFlowSign)))]
-rebuiltTopOfBookWithTrades = uncurry zip . fmap (uncurry zip . fmap coupleWithOrderFlowSign . unzip) . unzip . nubWith snd . fmap (fmap $ (,) <$> summariseTrades . snd <*> toTopOfBook . fst)
+                           -> [(TimeOfDay, ((Price, Quantity, Price), (TopOfBook, Quantity)))]
+rebuiltTopOfBookWithTrades = uncurry zip . fmap (uncurry zip . fmap coupleWithOrderFlowImbal . unzip) . unzip . compressWith snd . fmap (fmap $ (,) <$> summariseTrades . snd <*> toTopOfBook . fst)
 
-toRegGridSlice :: [((Price, Quantity, Price), (TopOfBook, OrderFlowSign))]
-               -> ((Price, Quantity, Price), (TopOfBook, Int))
-toRegGridSlice = ((,) <$> lastThatIsNotXOrX (0, 0, 0) . fst <*> ((,) <$> last . fst <*> toOFI . snd) . unzip . snd) . unzip
+toRegGridSlice :: [((Price, Quantity, Price), (TopOfBook, Quantity))]
+               -> ((Price, Quantity, Price), (TopOfBook, Quantity))
+toRegGridSlice = ((,) <$> lastThatIsNotXOrX (0, 0, 0) . fst <*> ((,) <$> last . fst <*> sum . snd) . unzip . snd) . unzip
 
-flattenRegGridSlice :: (TimeOfDay, ((Price, Quantity, Price), (TopOfBook, Int)))
+flattenRegGridSlice :: (TimeOfDay, ((Price, Quantity, Price), (TopOfBook, Quantity)))
                     -> RegGridLOB
 flattenRegGridSlice (t, ((lp, lq, lv), (((bp, bs), (ap, as)), ofi))) =
    (t, bp, bs, ap, as, lp, lq, lv, ofi)
